@@ -1,8 +1,8 @@
-import _ from 'lodash'
+/* eslint-disable i18next/no-literal-string */
+import _ from "lodash"
 
 //TODO move it to backend
 class TestResultUtils {
-
 
   resultsForNode = (testResults, nodeId) => {
     if (testResults && this._nodeResults(testResults, nodeId)) {
@@ -10,10 +10,10 @@ class TestResultUtils {
         invocationResults: this._invocationResults(testResults, nodeId),
         mockedResults: this._mockedResults(testResults, nodeId),
         nodeResults: this._nodeResults(testResults, nodeId),
-        errors: this._errors(testResults, nodeId)
+        errors: this._errors(testResults, nodeId),
       }
     } else {
-      return null;
+      return null
     }
   }
 
@@ -47,7 +47,7 @@ class TestResultUtils {
       expressionResults: expressionResults,
       mockedResultsForCurrentContext: mockedResultsForCurrentContext,
       mockedResultsForEveryContext: mockedResultsForEveryContext,
-      error: error
+      error: error,
     }
   }
 
@@ -59,9 +59,23 @@ class TestResultUtils {
   _contextDisplay = (context) => {
     //TODO: what should be here? after aggregate input is not always present :|
     //we assume it's better to display nothing than some crap...
-    const varToInclude = context.variables["input"] || _.head(_.values(context.variables)) || {};
+    const varToInclude = context.variables["input"] || _.head(_.values(context.variables)) || {}
     return (varToInclude.original || "").toString().substring(0, 50)
   }
+
+  stateForSelectTestResults = (id, testResults) => {
+    if (this.hasTestResults(testResults)) {
+      const chosenId = id || _.get(_.head(this.availableContexts(testResults)), "id")
+      return {
+        testResultsToShow: this.nodeResultsForContext(testResults, chosenId),
+        testResultsIdToShow: chosenId,
+      }
+    } else {
+      return null
+    }
+  }
+
+  hasTestResults = (testResults) => testResults && this.availableContexts(testResults).length > 0
 }
 //TODO this pattern is not necessary, just export every public function as in actions.js
 export default new TestResultUtils()

@@ -1,7 +1,7 @@
-import * as joint from 'jointjs/index'
+import * as joint from "jointjs"
 
 export function findLinkBelowCell(jointJsGraph, cellView, paper) {
-  return jointJsGraph.get('cells').find((cell) => {
+  return jointJsGraph.get("cells").find((cell) => {
     if (cell.id === cellView.model.id) {
       return false
     } else if (cell instanceof joint.dia.Link) {
@@ -12,10 +12,10 @@ export function findLinkBelowCell(jointJsGraph, cellView, paper) {
         const linkLine = joint.g.line(linkView.sourcePoint, linkView.targetPoint)
         return linkLine.intersection(cellTopSideLine) || linkLine.intersection(cellBottomSideLine)
       } else {
-        return false;
+        return false
       }
     } else {
-      return false;
+      return false
     }
   })
 }
@@ -31,12 +31,12 @@ function cellHorizontalLines(cellAttributes) {
   const cellBottomSideLine =  joint.g.line(cellBottomLeftPoint, cellBottomRightPoint)
   return {
     cellTopSideLine: cellTopSideLine,
-    cellBottomSideLine: cellBottomSideLine
+    cellBottomSideLine: cellBottomSideLine,
   }
 }
 
 export function findCell(jointJsGraph, cellId) {
-  return jointJsGraph.get('cells').find((cell) => {
+  return jointJsGraph.get("cells").find((cell) => {
     return cell.id === cellId
   })
 }

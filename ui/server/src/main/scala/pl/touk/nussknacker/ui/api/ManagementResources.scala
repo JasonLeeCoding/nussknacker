@@ -2,7 +2,7 @@ package pl.touk.nussknacker.ui.api
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.http.scaladsl.marshalling.Marshal
-import akka.http.scaladsl.model.{HttpResponse, MessageEntity, StatusCodes}
+import akka.http.scaladsl.model.{HttpResponse, MessageEntity, StatusCode, StatusCodes}
 import akka.http.scaladsl.server._
 import akka.http.scaladsl.unmarshalling.{FromEntityUnmarshaller, Unmarshaller}
 import akka.pattern.ask
@@ -17,15 +17,19 @@ import io.circe.syntax._
 import io.circe.{Decoder, Encoder, Json}
 import pl.touk.nussknacker.engine.api.deployment.TestProcess.{ExceptionResult, ExpressionInvocationResult, MockedResult, NodeResult, ResultContext, TestData, TestResults}
 import pl.touk.nussknacker.engine.api.DisplayJson
+import pl.touk.nussknacker.ui.process.{ProcessService, deployment => uideployment}
+import pl.touk.nussknacker.engine.api.deployment.{CustomActionError, CustomActionFailure, CustomActionInvalidStatus, CustomActionNonExisting, CustomActionNotImplemented, CustomActionResult, ProcessActionType, SavepointResult}
 import pl.touk.nussknacker.engine.canonicalgraph.CanonicalProcess
 import pl.touk.nussknacker.engine.marshall.ProcessMarshaller
 import pl.touk.nussknacker.engine.util.json.BestEffortJsonEncoder
 import pl.touk.nussknacker.restmodel.displayedgraph.DisplayableProcess
 import pl.touk.nussknacker.restmodel.process.ProcessIdWithName
+import pl.touk.nussknacker.ui.api.EspErrorToHttp.toResponse
 import pl.touk.nussknacker.ui.api.ProcessesResources.UnmarshallError
+import pl.touk.nussknacker.ui.api.deployment.{CustomActionRequest, CustomActionResponse}
 import pl.touk.nussknacker.ui.config.FeatureTogglesConfig
-import pl.touk.nussknacker.ui.process.deployment.{Cancel, Deploy, Snapshot, Test}
-import pl.touk.nussknacker.ui.process.marshall.ProcessConverter
+import pl.touk.nussknacker.ui.process.deployment.{Cancel, Deploy, Snapshot, Stop, Test}
+import pl.touk.nussknacker.ui.process.exception.ProcessIllegalAction
 import pl.touk.nussknacker.ui.process.repository.FetchingProcessRepository
 import pl.touk.nussknacker.ui.processreport.{NodeCount, ProcessCounter, RawCount}
 import pl.touk.nussknacker.ui.security.api.LoggedUser
@@ -42,7 +46,8 @@ object ManagementResources {
             testResultsMaxSizeInBytes: Int,
             processAuthorizator: AuthorizeProcess,
             processRepository: FetchingProcessRepository[Future], featuresOptions: FeatureTogglesConfig,
-            processResolving: UIProcessResolving)
+            processResolving: UIProcessResolving,
+            processService: ProcessService)
            (implicit ec: ExecutionContext,
             mat: Materializer, system: ActorSystem): ManagementResources = {
     new ManagementResources(
@@ -52,7 +57,8 @@ object ManagementResources {
       processAuthorizator,
       processRepository,
       featuresOptions.deploySettings,
-      processResolving
+      processResolving,
+      processService
     )
   }
 
@@ -95,7 +101,8 @@ class ManagementResources(processCounter: ProcessCounter,
                           testResultsMaxSizeInBytes: Int,
                           val processAuthorizer: AuthorizeProcess,
                           val processRepository: FetchingProcessRepository[Future], deploySettings: Option[DeploySettings],
-                          processResolving: UIProcessResolving)
+                          processResolving: UIProcessResolving,
+                          processService: ProcessService)
                          (implicit val ec: ExecutionContext, mat: Materializer, system: ActorSystem)
   extends Directives
     with LazyLogging
@@ -117,25 +124,32 @@ class ManagementResources(processCounter: ProcessCounter,
     }
 
   def securedRoute(implicit user: LoggedUser): Route = {
-    path("adminProcessManagement" / "snapshot" / Segment / Segment) { (processName, savepointDir) =>
-      (post & processId(processName)) { processId =>
+    path("adminProcessManagement" / "snapshot" / Segment) { processName =>
+      (post & processId(processName) & parameters('savepointDir.?)) { (processId, savepointDir) =>
         canDeploy(processId) {
           complete {
-            (managementActor ? Snapshot(processId, user, savepointDir))
-              .mapTo[String].map(path => HttpResponse(entity = path, status = StatusCodes.OK))
-              .recover(EspErrorToHttp.errorToHttp)
+            convertSavepointResultToResponse(managementActor ? Snapshot(processId, user, savepointDir))
           }
         }
       }
     } ~
+      path("adminProcessManagement" / "stop" / Segment) { processName =>
+        (post & processId(processName) & parameters('savepointDir.?)) { (processId, savepointDir) =>
+          canDeploy(processId) {
+            complete {
+              convertSavepointResultToResponse(managementActor ? Stop(processId, user, savepointDir))
+            }
+          }
+        }
+      } ~
       path("adminProcessManagement" / "deploy" / Segment / Segment) { (processName, savepointPath) =>
         (post & processId(processName)) { processId =>
           canDeploy(processId) {
             withComment { comment =>
               complete {
-                (managementActor ? Deploy(processId, user, Some(savepointPath), comment))
-                  .map { _ => HttpResponse(status = StatusCodes.OK) }
-                  .recover(EspErrorToHttp.errorToHttp)
+                processService
+                  .deployProcess(processId, Some(savepointPath), comment)
+                  .map(toResponse(StatusCodes.OK))
               }
             }
           }
@@ -146,9 +160,9 @@ class ManagementResources(processCounter: ProcessCounter,
           canDeploy(processId){
             withComment { comment =>
               complete {
-                (managementActor ? Deploy(processId, user, None, comment))
-                  .map { _ => HttpResponse(status = StatusCodes.OK) }
-                  .recover(EspErrorToHttp.errorToHttp)
+                processService
+                  .deployProcess(processId, None, comment)
+                  .map(toResponse(StatusCodes.OK))
               }
             }
           }
@@ -159,9 +173,9 @@ class ManagementResources(processCounter: ProcessCounter,
           canDeploy(processId) {
             withComment { comment =>
               complete {
-                (managementActor ? Cancel(processId, user, comment))
-                  .map { _ => HttpResponse(status = StatusCodes.OK) }
-                  .recover(EspErrorToHttp.errorToHttp)
+                processService
+                  .cancelProcess(processId, comment)
+                  .map(toResponse(StatusCodes.OK))
               }
             }
           }
@@ -196,8 +210,33 @@ class ManagementResources(processCounter: ProcessCounter,
             }
           }
         }
+      } ~
+      path("processManagement" / "customAction" / Segment) { processName =>
+        (post & processId(processName) & entity(as[CustomActionRequest])) { (process, req) =>
+          val params = req.params.getOrElse(Map.empty)
+          val customAction = uideployment.CustomAction(req.actionName, process, user, params)
+          complete {
+            (managementActor ? customAction)
+              .mapTo[Either[CustomActionError, CustomActionResult]]
+              .flatMap {
+                case res@Right(_) =>
+                  toHttpResponse(CustomActionResponse(res))(StatusCodes.OK)
+                case res@Left(err) =>
+                  val response = toHttpResponse(CustomActionResponse(res)) _
+                  err match {
+                    case _: CustomActionFailure => response(StatusCodes.InternalServerError)
+                    case _: CustomActionInvalidStatus => response(StatusCodes.Forbidden)
+                    case _: CustomActionNotImplemented => response(StatusCodes.NotImplemented)
+                    case _: CustomActionNonExisting => response(StatusCodes.NotFound)
+                  }
+              }
+          }
+        }
       }
   }
+
+  private def toHttpResponse[A:Encoder](a: A)(code: StatusCode): Future[HttpResponse] =
+    Marshal(a).to[MessageEntity].map(en => HttpResponse(entity = en, status = code))
 
   private def performTest(id: ProcessIdWithName, testData: Array[Byte], displayableProcessJson: String)(implicit user: LoggedUser): Future[ResultsWithCounts] = {
     parse(displayableProcessJson).right.flatMap(Decoder[DisplayableProcess].decodeJson) match {
@@ -248,6 +287,12 @@ class ManagementResources(processCounter: ProcessCounter,
     Directive[Unit](toStrict0)
   }
 
+  private def convertSavepointResultToResponse(future: Future[Any]) = {
+    future
+      .mapTo[SavepointResult]
+      .map { case SavepointResult(path) => HttpResponse(entity = path, status = StatusCodes.OK) }
+      .recover(EspErrorToHttp.errorToHttp)
+  }
 }
 
 @JsonCodec case class ResultsWithCounts(results: Json, counts: Map[String, NodeCount])

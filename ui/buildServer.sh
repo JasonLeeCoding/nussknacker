@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 
-profile=sample
-if [ $# -ge 1 ]; then
-  profile=$1
-fi
+set -e
 
 cd ..
-if [ "$profile" == "sample" ]; then
-    ./sbtwrapper assemblySamples
-fi
-./sbtwrapper ui/assembly
+#assemblySamples is needed to use models, assemblyEngines - to access process managers, ui/assembly - to be able to use FE
+./sbtwrapper ";assemblySamples;assemblyEngines;ui/assembly"
 cd -

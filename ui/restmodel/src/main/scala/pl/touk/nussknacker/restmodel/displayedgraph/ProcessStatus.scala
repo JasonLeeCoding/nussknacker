@@ -1,44 +1,86 @@
 package pl.touk.nussknacker.restmodel.displayedgraph
 
-import io.circe.generic.JsonCodec
-import pl.touk.nussknacker.engine.api.deployment.{ProcessState, RunningState}
-
-@JsonCodec case class ProcessStatus(deploymentId: Option[String],
-                                    status: String,
-                                    startTime: Long,
-                                    isRunning: Boolean,
-                                    isDeployInProgress: Boolean,
-                                    errorMessage: Option[String] = None) {
-  def isOkForDeployed: Boolean = isRunning || isDeployInProgress
-
-}
+import java.net.URI
+import pl.touk.nussknacker.engine.api.deployment.simple.{SimpleProcessStateDefinitionManager, SimpleStateStatus}
+import pl.touk.nussknacker.engine.api.deployment.{ProcessState, ProcessStateDefinitionManager, StateStatus}
 
 object ProcessStatus {
-  def apply(processState: ProcessState, expectedDeploymentVersion: Option[Long]): ProcessStatus = {
 
-    val versionMatchMessage = (processState.version, expectedDeploymentVersion) match {
-      //currently returning version is optional
-      case (None, _) => None
-      case (Some(stateVersion), Some(expectedVersion)) if stateVersion.versionId == expectedVersion => None
-      case (Some(stateVersion), Some(expectedVersion)) => Some(s"Process deployed in version ${stateVersion.versionId} (by ${stateVersion.user}), expected version $expectedVersion")
-      case (Some(stateVersion), None) => Some(s"Process deployed in version ${stateVersion.versionId} (by ${stateVersion.user}), should not be deployed")
-    }
-    val isRunning = processState.runningState == RunningState.Running && versionMatchMessage.isEmpty
-    val errorMessage = List(versionMatchMessage, processState.message).flatten.reduceOption(_  + ", " + _)
+  def simple(status: StateStatus): ProcessState =
+    createState(status, SimpleProcessStateDefinitionManager)
 
-    ProcessStatus(
-      deploymentId = Some(processState.id.value),
-      status = processState.status,
-      startTime = processState.startTime,
-      isRunning = isRunning,
-      isDeployInProgress = processState.runningState == RunningState.Deploying,
-      errorMessage = errorMessage
+  def simple(status: StateStatus, icon: Option[URI], tooltip: Option[String], description: Option[String], previousState: Option[ProcessState]): ProcessState =
+    new ProcessState(
+      version = previousState.flatMap(_.version),
+      status = status,
+      deploymentId = previousState.flatMap(_.deploymentId),
+      allowedActions = SimpleProcessStateDefinitionManager.statusActions(status),
+      icon = if (icon.isDefined) icon else SimpleProcessStateDefinitionManager.statusIcon(status),
+      tooltip = if (tooltip.isDefined) tooltip else SimpleProcessStateDefinitionManager.statusTooltip(status),
+      description = if (description.isDefined) description else SimpleProcessStateDefinitionManager.statusDescription(status),
+      startTime = previousState.flatMap(_.startTime),
+      attributes = previousState.flatMap(_.attributes),
+      errors = previousState.map(_.errors).getOrElse(List.empty)
     )
-  }
 
-  def failedToGet = ProcessStatus(None, "UNKOWN", 0L, isRunning = false,
-    isDeployInProgress = false, errorMessage = Some("Failed to obtain status"))
+  def createState(status: StateStatus,
+                  processStateDefinitionManager: ProcessStateDefinitionManager): ProcessState =
+    ProcessState(
+      None,
+      status,
+      None,
+      allowedActions = processStateDefinitionManager.statusActions(status),
+      icon = processStateDefinitionManager.statusIcon(status),
+      tooltip = processStateDefinitionManager.statusTooltip(status),
+      description = processStateDefinitionManager.statusDescription(status),
+      None,
+      None,
+      Nil
+    )
 
-  def stateNotFound = ProcessStatus(None, "UNKOWN", 0L, isRunning = false,
-    isDeployInProgress = false, errorMessage = Some("Process not found in engine"))
+  def simpleErrorShouldBeRunning(deployedVersionId: Long, user: String, previousState: Option[ProcessState]): ProcessState = simple(
+    status = SimpleStateStatus.Error,
+    icon = Some(SimpleProcessStateDefinitionManager.deployFailedIcon),
+    tooltip = Some(SimpleProcessStateDefinitionManager.shouldBeRunningTooltip(deployedVersionId, user)),
+    description = Some(SimpleProcessStateDefinitionManager.shouldBeRunningDescription),
+    previousState = previousState
+  )
+
+  def simpleErrorMismatchDeployedVersion(deployedVersionId: Long, exceptedVersionId: Long, user: String, previousState: Option[ProcessState]): ProcessState = simple(
+    status = SimpleStateStatus.Error,
+    icon = Some(SimpleProcessStateDefinitionManager.deployFailedIcon),
+    tooltip = Some(SimpleProcessStateDefinitionManager.mismatchDeployedVersionTooltip(deployedVersionId, exceptedVersionId, user)),
+    description = Some(SimpleProcessStateDefinitionManager.mismatchDeployedVersionDescription),
+    previousState = previousState
+  )
+
+  def simpleWarningShouldNotBeRunning(previousState: Option[ProcessState], deployed: Boolean): ProcessState = simple(
+    status = SimpleStateStatus.Warning,
+    icon = Some(SimpleProcessStateDefinitionManager.shouldNotBeRunningIcon(deployed)),
+    tooltip = Some(SimpleProcessStateDefinitionManager.shouldNotBeRunningMessage(deployed)),
+    description = Some(SimpleProcessStateDefinitionManager.shouldNotBeRunningMessage(deployed)),
+    previousState = previousState
+  )
+
+  def simpleWarningMissingDeployedVersion(exceptedVersionId: Long, user: String, previousState: Option[ProcessState]): ProcessState = simple(
+    status = SimpleStateStatus.Warning,
+    icon = Some(SimpleProcessStateDefinitionManager.deployWarningIcon),
+    tooltip = Some(SimpleProcessStateDefinitionManager.missingDeployedVersionTooltip(exceptedVersionId, user)),
+    description = Some(SimpleProcessStateDefinitionManager.missingDeployedVersionDescription),
+    previousState = previousState
+  )
+
+  def simpleWarningProcessWithoutAction(previousState: Option[ProcessState]): ProcessState = simple(
+    status = SimpleStateStatus.Warning,
+    icon = Some(SimpleProcessStateDefinitionManager.notDeployedWarningIcon),
+    tooltip = Some(SimpleProcessStateDefinitionManager.processWithoutActionMessage),
+    description = Some(SimpleProcessStateDefinitionManager.processWithoutActionMessage),
+    previousState = previousState
+  )
+
+  val unknown: ProcessState = simple(SimpleStateStatus.Unknown)
+
+  val failedToGet: ProcessState = simple(SimpleStateStatus.FailedToGet)
+
+  val notFound: ProcessState = simple(SimpleStateStatus.NotFound)
 }

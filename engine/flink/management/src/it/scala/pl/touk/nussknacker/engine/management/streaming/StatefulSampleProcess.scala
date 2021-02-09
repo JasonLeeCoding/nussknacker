@@ -14,7 +14,7 @@ object StatefulSampleProcess {
 
    EspProcessBuilder
       .id(id)
-     .exceptionHandler("param1" -> "'val1'")
+     .exceptionHandler()
       .source("state", "oneSource")
         .customNode("stateful", "stateVar", "stateful", "keyBy" -> "#input")
         .sink("end", "#stateVar": Expression, "kafka-string", "topic" -> s"'output-$id'")
@@ -24,17 +24,30 @@ object StatefulSampleProcess {
 
    EspProcessBuilder
       .id(id)
-     .exceptionHandler("param1" -> "'val1'")
+     .exceptionHandler()
       .source("state", "oneSource")
         .customNode("stateful", "stateVar", "constantStateTransformer")
         .sink("end", "#stateVar", "kafka-string", "topic" -> s"'output-$id'")
   }
 
+  def processWithMapAggegator(id: String, aggegatorExpression: String) =     EspProcessBuilder
+    .id(id)
+    .exceptionHandler()
+    .source("state", "oneSource")
+    .customNode("transform", "aggregate", "aggregate",
+      "keyBy" -> "'test'",
+      "aggregator" -> s"#AGG.map({x: $aggegatorExpression})",
+      "aggregateBy" -> "{ x: 1 }",
+      "windowLength" -> "T(java.time.Duration).parse('PT1H')",
+      "emitWhenEventLeft" -> "false"
+    )
+    .sink("end", "'test'", "kafka-string", "topic" -> s"'output-$id'")
+
   def prepareProcessWithLongState(id: String): EspProcess = {
 
    EspProcessBuilder
       .id(id)
-     .exceptionHandler("param1" -> "'val1'")
+     .exceptionHandler()
       .source("state", "oneSource")
         .customNode("stateful", "stateVar", "constantStateTransformerLongValue")
         .sink("end", "#stateVar", "kafka-string", "topic" -> s"'output-$id'")

@@ -29,9 +29,10 @@ taskmanager.hostname: taskmanager
 
 taskmanager.data.port: 6126
 
-# The heap size for the TaskManager JVM
+taskmanager.memory.task.heap.size: 256m
+taskmanager.memory.managed.size: 204m
 
-taskmanager.heap.size: 512
+env.java.opts.taskmanager: "-Dcom.sun.management.jmxremote -Djava.rmi.server.hostname=localhost -Dcom.sun.management.jmxremote.port=9009 -Dcom.sun.management.jmxremote.rmi.port=9008 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"
 
 # The number of task slots that each TaskManager offers. Each slot runs one parallel pipeline.
 
@@ -45,7 +46,7 @@ jobmanager.rpc.port: 6123
 
 # The heap size for the JobManager JVM
 
-jobmanager.heap.size: 256
+jobmanager.heap.size: 256m
 
 # The parallelism used for programs that did not specify and other parallelism.
 
@@ -72,12 +73,12 @@ state.backend: filesystem
 state.checkpoints.dir: file:///opt/flink/data/checkpoints
 state.savepoints.dir: file:///opt/flink/data/savepoints
 
-metrics.reporters: graphite_reporter
-metrics.reporter.graphite_reporter.class: org.apache.flink.metrics.graphite.GraphiteReporter
-metrics.reporter.graphite_reporter.host: influxdb
-metrics.reporter.graphite_reporter.port: 2003
-metrics.reporter.graphite_reporter.protocol: UDP
-metrics.reporter.graphite_reporter.interval: 1 SECONDS
+metrics.reporters: influxdb_reporter
+
+metrics.reporter.influxdb_reporter.class: org.apache.flink.metrics.influxdb.InfluxdbReporter
+metrics.reporter.influxdb_reporter.host: telegraf
+metrics.reporter.influxdb_reporter.port: 8087
+metrics.reporter.influxdb_reporter.db: esp
 
 metrics.scope.jm: demo.<host>.jobmanagerGlobal
 metrics.scope.jm.job: demo.<host>.jobmanagerJob.<job_name>

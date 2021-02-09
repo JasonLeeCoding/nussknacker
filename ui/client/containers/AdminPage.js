@@ -1,20 +1,24 @@
-import React from 'react'
-import {Tab, TabList, TabPanel, Tabs} from 'react-tabs'
-import * as  queryString from 'query-string'
-import 'react-tabs/style/react-tabs.css'
+import classNames from "classnames"
+import * as  queryString from "query-string"
+import React from "react"
+import {withRouter} from "react-router-dom"
+import {Tab, TabList, TabPanel, Tabs} from "react-tabs"
+import "react-tabs/style/react-tabs.css"
+import {nkPath} from "../config"
+import {CustomProcesses, CustomProcessesTabData} from "./admin/CustomProcesses"
 import SearchComponents from "./admin/SearchComponents"
-import UnusedComponents from "./admin/UnusedComponents"
 import Services from "./admin/Services"
-import CustomProcesses from "./admin/CustomProcesses"
-import {withRouter} from 'react-router-dom'
-import {nkPath} from "../config";
+import UnusedComponents from "./admin/UnusedComponents"
+import {Page} from "./Page"
+import {compose} from "redux"
+import style from "./adminPage.styl"
 
-class AdminPage extends React.Component {
+export class AdminPage extends React.Component {
   tabs = [
     {key: SearchComponents.key, title: SearchComponents.header, component: <SearchComponents/>},
     {key: UnusedComponents.key, title: UnusedComponents.header, component: <UnusedComponents/>},
     {key: Services.key, title: Services.header, component: <Services/>},
-    {key: CustomProcesses.key, title: CustomProcesses.header, component: <CustomProcesses/>}
+    {key: CustomProcessesTabData.key, title: CustomProcessesTabData.header, component: <CustomProcesses/>},
   ]
 
   constructor(props) {
@@ -23,7 +27,7 @@ class AdminPage extends React.Component {
     const query = queryString.parse(window.location.search, {parseNumbers: true})
 
     this.state = {
-      selectedTab: query.tab || 0
+      selectedTab: query.tab || 0,
     }
   }
 
@@ -35,8 +39,8 @@ class AdminPage extends React.Component {
 
   render() {
     return (
-      <div className="Page">
-        <Tabs defaultIndex={this.state.selectedTab} onSelect={this.onTabChange}>
+      <Page>
+        <Tabs defaultIndex={this.state.selectedTab} onSelect={this.onTabChange} className={classNames("react-tabs", style.tabs)}>
           <TabList>
             {
               this.tabs.map(tab => {
@@ -49,12 +53,12 @@ class AdminPage extends React.Component {
           {
             this.tabs.map(tab => {
               return (
-                <TabPanel key={tab.key}>{tab.component}</TabPanel>
+                <TabPanel key={tab.key} className={classNames("react-tabs__tab-panel", style.tab)}>{tab.component}</TabPanel>
               )
             })
           }
         </Tabs>
-      </div>
+      </Page>
     )
   }
 }
@@ -62,4 +66,8 @@ class AdminPage extends React.Component {
 AdminPage.path = `${nkPath}/admin`
 AdminPage.header = "Admin"
 
-export default withRouter(AdminPage)
+const enhance = compose(
+  withRouter,
+)
+
+export const NkAdminPage = enhance(AdminPage)

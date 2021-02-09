@@ -1,12 +1,15 @@
 package pl.touk.nussknacker.engine.api.typed
 
-import java.util
-
 import io.circe.Encoder
-import pl.touk.nussknacker.engine.api.dict.{DictDefinition, DictInstance}
+import org.apache.commons.lang3.ClassUtils
+import pl.touk.nussknacker.engine.api.dict.DictInstance
+import pl.touk.nussknacker.engine.api.util.NotNothing
+import pl.touk.nussknacker.engine.api.util.ReflectUtils
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe._
+import scala.collection.JavaConverters._
+import scala.language.implicitConversions
 
 object typing {
 
@@ -16,10 +19,8 @@ object typing {
 
   sealed trait TypingResult {
 
-    def canHasAnyPropertyOrField: Boolean
-
     final def canBeSubclassOf(typingResult: TypingResult): Boolean =
-      CanBeSubclassDeterminer.canBeSubclassOf(this, typingResult)
+      CanBeSubclassDeterminer.canBeSubclassOf(this, typingResult).isValid
 
     def display: String
 
@@ -40,15 +41,14 @@ object typing {
       TypedObjectTypingResult(definition.fields.map { case (k, v) => (k, Typed(v))})
 
     def apply(fields: Map[String, TypingResult]): TypedObjectTypingResult =
-      TypedObjectTypingResult(fields, TypedClass[java.util.Map[_, _]])
+      TypedObjectTypingResult(fields, TypedClass(classOf[java.util.Map[_, _]], List(Typed[String], Unknown)))
 
   }
 
-  case class TypedObjectTypingResult(fields: Map[String, TypingResult], objType: TypedClass) extends SingleTypingResult {
+  case class TypedObjectTypingResult(fields: Map[String, TypingResult],
+                                     objType: TypedClass, additionalInfo: Map[String, AdditionalDataValue] = Map.empty) extends SingleTypingResult {
 
-    override def canHasAnyPropertyOrField: Boolean = false
-
-    override def display: String = fields.map { case (name, typ) => s"$name of type ${typ.display}"}.mkString("object with fields: ", ", ", "")
+    override def display: String = fields.map { case (name, typ) => s"$name: ${typ.display}"}.mkString("{", ", ", "}")
 
   }
 
@@ -56,30 +56,24 @@ object typing {
 
     type ValueType = SingleTypingResult
 
-    override def canHasAnyPropertyOrField: Boolean = false
-
     override def objType: TypedClass = valueType.objType
 
-    override def display: String = s"dict with id: '$dictId'"
+    override def display: String = s"Dict(id=$dictId)"
 
   }
 
   case class TypedTaggedValue(underlying: SingleTypingResult, tag: String) extends SingleTypingResult {
 
-    override def canHasAnyPropertyOrField: Boolean = underlying.canHasAnyPropertyOrField
-
     override def objType: TypedClass = underlying.objType
 
-    override def display: String = s"tagged: ${underlying.display} by tag: '$tag'"
+    override def display: String = s"${underlying.display} @ $tag"
 
   }
 
   // Unknown is representation of TypedUnion of all possible types
   case object Unknown extends TypingResult {
 
-    override def canHasAnyPropertyOrField: Boolean = true
-
-    override val display = "unknown"
+    override val display = "Unknown"
 
   }
 
@@ -88,87 +82,100 @@ object typing {
 
     assert(possibleTypes.size != 1, "TypedUnion should has zero or more than one possibleType - in other case should be used TypedObjectTypingResult or TypedClass")
 
-    override def canHasAnyPropertyOrField: Boolean = {
-      possibleTypes.exists(_.canHasAnyPropertyOrField)
-    }
-
     override val display : String = possibleTypes.toList match {
-      case Nil => "empty"
+      case Nil => "EmptyUnion"
       case many => many.map(_.display).mkString(" | ")
     }
 
   }
 
   //TODO: make sure parameter list has right size - can be filled with Unknown if needed
-  case class TypedClass(klass: Class[_], params: List[TypingResult]) extends SingleTypingResult {
-
-    override def canHasAnyPropertyOrField: Boolean =
-      CanBeSubclassDeterminer.canBeSubclassOf(this, Typed[util.Map[_, _]]) || hasGetFieldByNameMethod
-
-    private def hasGetFieldByNameMethod =
-      klass.getMethods.exists(m => m.getName == "get" && (m.getParameterTypes sameElements Array(classOf[String])))
+  case class TypedClass private[typing] (klass: Class[_], params: List[TypingResult]) extends SingleTypingResult {
 
     //TODO: should we use simple name here?
     override def display: String = {
+      val className = ReflectUtils.fixedClassSimpleNameWithoutParentModule(ClassUtils.primitiveToWrapper(klass))
       if (params.nonEmpty)
-        s"${klass.getName}[${params.map(_.display).mkString(",")}]"
+        s"$className[${params.map(_.display).mkString(",")}]"
       else
-        s"${klass.getName}"
+        s"$className"
     }
 
     override def objType: TypedClass = this
 
   }
 
-  object TypedClass {
-
-    def apply[T: ClassTag] : TypedClass =
-      TypedClass(ClazzRef[T])
-
-    def apply(klass: ClazzRef) : TypedClass =
-      TypedClass(klass.clazz, klass.params.map(Typed.apply))
-
-  }
-
   object Typed {
 
-    def empty = TypedUnion(Set.empty)
+    //TODO: how to assert in compile time that T != Any, AnyRef, Object?
+    def typedClass[T: ClassTag]: TypedClass = TypedClass(toRuntime[T], Nil)
 
-    def apply[T: ClassTag]: TypingResult = apply(ClazzRef[T])
-
-    def fromDetailedType[T: TypeTag]: TypingResult = apply(ClazzRef.fromDetailedType[T])
-
-    def apply(klass: Class[_]): TypingResult = {
-      apply(ClazzRef(klass))
+    //TODO: make it more safe??
+    def typedClass(klass: Class[_]): TypedClass = if (klass == classOf[Any]) {
+      throw new IllegalArgumentException("Cannot have typed class of Any, use Unknown")
+    } else {
+      TypedClass(klass, Nil)
     }
 
-    def apply(klass: ClazzRef): TypingResult = {
-      // TODO: make creating unknown type more explicit and fix places where we have Typed type instead of TypedClass | Unknown
-      if (klass == ClazzRef.unknown) {
+    def genericTypeClass(klass: Class[_], params: List[TypingResult]): TypingResult = TypedClass(klass, params)
+
+    def genericTypeClass[T:ClassTag](params: List[TypingResult]): TypingResult = TypedClass(toRuntime[T], params)
+
+    def empty: TypedUnion = TypedUnion(Set.empty)
+
+    def apply[T: ClassTag]: TypingResult = apply(toRuntime[T])
+
+    /*using TypeTag can give better description (with extracted generic parameters), however:
+      - in runtime/production we usually don't have TypeTag, as we rely on reflection anyway
+      - one should be *very* careful with TypeTag as it degrades performance significantly when on critical path (e.g. SpelExpression.evaluate)
+     */
+    def fromDetailedType[T: TypeTag: NotNothing]: TypingResult = {
+      val tag = typeTag[T]
+      // is it correct mirror?
+      implicit val mirror: Mirror = tag.mirror
+      fromType(tag.tpe)
+    }
+
+    private def fromType(typ: Type)(implicit mirror: Mirror): TypingResult = {
+      val runtimeClass = mirror.runtimeClass(typ.erasure)
+      if (runtimeClass == classOf[Any])
         Unknown
-      } else {
-        TypedClass(klass)
-      }
+      else
+        TypedClass(runtimeClass, typ.typeArgs.map(fromType))
+    }
+
+    private def toRuntime[T:ClassTag]: Class[_] = implicitly[ClassTag[T]].runtimeClass
+
+    def apply(klass: Class[_]): TypingResult = {
+      if (klass == classOf[Any]) Unknown else TypedClass(klass, Nil)
     }
 
     def taggedDictValue(typ: SingleTypingResult, dictId: String): TypedTaggedValue = tagged(typ, s"dictValue:$dictId")
 
-    def tagged(typ: SingleTypingResult, tag: String) = TypedTaggedValue(typ, tag)
+    def tagged(typ: SingleTypingResult, tag: String): TypedTaggedValue = TypedTaggedValue(typ, tag)
 
     def fromInstance(obj: Any): TypingResult = {
       obj match {
         case null =>
           Typed.empty
-        case TypedMap(fields) =>
-          val fieldTypes = fields.map {
+        case typedMap: TypedMap =>
+          val fieldTypes = typedMap.asScala.map {
             case (k, v) => k -> fromInstance(v)
-          }
-          TypedObjectTypingResult(fieldTypes, TypedClass[TypedMap])
+          }.toMap
+          TypedObjectTypingResult(fieldTypes)
+        case list: List[_] =>
+          TypedClass(obj.getClass, List(unionOfElementTypes(list)))
+        case javaList: java.util.List[_] =>
+          TypedClass(obj.getClass, List(unionOfElementTypes(javaList.asScala.toList)))
         case dict: DictInstance =>
           TypedDict(dict.dictId, dict.valueType)
         case other =>
           Typed(other.getClass)
       }
+    }
+
+    private def unionOfElementTypes(list: List[_]): TypingResult = {
+      apply(list.map(fromInstance).toSet)
     }
 
     def apply(possibleTypes: TypingResult*): TypingResult = {
@@ -192,11 +199,30 @@ object typing {
       }
     }
 
-    private def flatten(possibleTypes: List[KnownTypingResult]) = possibleTypes.flatMap {
+    private def flatten(possibleTypes: List[KnownTypingResult]): List[SingleTypingResult] = possibleTypes.flatMap {
       case TypedUnion(possibleTypes) => possibleTypes
       case other: SingleTypingResult => List(other)
     }
 
   }
+
+  object AdditionalDataValue {
+
+    implicit def string(value: String): AdditionalDataValue = StringValue(value)
+
+    implicit def long(value: Long): AdditionalDataValue = LongValue(value)
+
+    implicit def boolean(value: Boolean): AdditionalDataValue = BooleanValue(value)
+
+  }
+
+  sealed trait AdditionalDataValue
+
+  case class StringValue(value: String) extends AdditionalDataValue
+
+  case class LongValue(value: Long) extends AdditionalDataValue
+
+  case class BooleanValue(value: Boolean) extends AdditionalDataValue
+
 
 }

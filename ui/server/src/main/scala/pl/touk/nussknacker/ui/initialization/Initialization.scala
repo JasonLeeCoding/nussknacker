@@ -16,6 +16,7 @@ import pl.touk.nussknacker.restmodel.process.ProcessId
 import pl.touk.nussknacker.restmodel.processdetails.ProcessDetails
 import pl.touk.nussknacker.ui.db.entity.EnvironmentsEntityData
 import pl.touk.nussknacker.ui.process.migrate.ProcessModelMigrator
+import pl.touk.nussknacker.ui.process.processingtypedata.ProcessingTypeDataProvider
 import pl.touk.nussknacker.ui.process.repository.WriteProcessRepository.UpdateProcessAction
 import pl.touk.nussknacker.ui.process.repository._
 import pl.touk.nussknacker.ui.security.api.{LoggedUser, NussknackerInternalUser, Permission}
@@ -29,7 +30,7 @@ import scala.concurrent.{Await, ExecutionContext}
 object Initialization {
 
   implicit val nussknackerUser: LoggedUser = NussknackerInternalUser
-  def init(migrations: Map[ProcessingType, ProcessMigrations],
+  def init(migrations: ProcessingTypeDataProvider[ProcessMigrations],
            db: DbConfig,
            environment: String,
            customProcesses: Option[Map[String, String]])(implicit ec: ExecutionContext) : Unit = {
@@ -123,7 +124,7 @@ class TechnicalProcessUpdate(customProcesses: Map[String, String], repository: D
             ).map(_.right.map(_ => ()))
           case Some(processId) =>
             fetchingProcessRepository.fetchLatestProcessVersion[Unit](processId).flatMap {
-              case Some(version) if version.user == Initialization.nussknackerUser.id =>
+              case Some(version) if version.user == Initialization.nussknackerUser.username =>
                 repository.updateProcess(UpdateProcessAction(processId, deploymentData, "External update")).map(_.right.map(_ => ()))
               case latestVersion => logger.info(s"Process $processId not updated. DB version is: \n${latestVersion.flatMap(_.json).getOrElse("")}\n " +
                 s" and version from file is: \n$deploymentData")
@@ -140,7 +141,7 @@ class TechnicalProcessUpdate(customProcesses: Map[String, String], repository: D
   }
 }
 
-class AutomaticMigration(migrations: Map[ProcessingType, ProcessMigrations],
+class AutomaticMigration(migrations: ProcessingTypeDataProvider[ProcessMigrations],
                          repository: DbWriteProcessRepository[DB], fetchingProcessRepository: DBFetchingProcessRepository[DB]) extends InitialOperation {
 
   private val migrator = new ProcessModelMigrator(migrations)
@@ -157,7 +158,7 @@ class AutomaticMigration(migrations: Map[ProcessingType, ProcessMigrations],
 
   private def migrateOne(processDetails: ProcessDetails)(implicit ec: ExecutionContext, lu: LoggedUser) : DB[Unit] = {
     // todo: unsafe processId?
-    migrator.migrateProcess(processDetails).map(_.toUpdateAction(ProcessId(processDetails.id.toLong))) match {
+    migrator.migrateProcess(processDetails).map(_.toUpdateAction(ProcessId(processDetails.processId.value))) match {
       case Some(action) => repository.updateProcess(action).flatMap {
         case Left(error) => DBIOAction.failed(new RuntimeException(s"Failed to migrate ${processDetails.name}: $error"))
         case Right(_) => DBIOAction.successful(())

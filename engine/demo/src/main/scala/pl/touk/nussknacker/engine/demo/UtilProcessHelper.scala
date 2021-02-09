@@ -1,11 +1,11 @@
 package pl.touk.nussknacker.engine.demo
 
 import io.circe.Encoder
-import pl.touk.nussknacker.engine.api.{Documentation, ParamName}
+import pl.touk.nussknacker.engine.api.{Documentation, HideToString, ParamName}
 
 import scala.util.Random
 
-object UtilProcessHelper {
+object UtilProcessHelper extends HideToString {
 
   import scala.collection.JavaConverters._
 
@@ -17,6 +17,11 @@ object UtilProcessHelper {
   @Documentation(description = "Get random number")
   def random(@ParamName("To (exclusive)") to: Int): Unit = {
     Random.nextInt(to)
-
   }
+
+  @Documentation(description = "Wrap param in 'Unknown' type to make it usable in places where type checking is too much restrictive")
+  def toAny(@ParamName("value") value: Any): Any = {
+    value
+  }
+
 }

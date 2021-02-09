@@ -1,24 +1,22 @@
 package pl.touk.nussknacker.engine.javademo;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.typesafe.config.Config;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
+import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.util.serialization.KeyedSerializationSchema;
 import pl.touk.nussknacker.engine.api.CustomStreamTransformer;
 import pl.touk.nussknacker.engine.api.ProcessListener;
 import pl.touk.nussknacker.engine.api.Service;
 import pl.touk.nussknacker.engine.api.exception.ExceptionHandlerFactory;
+import pl.touk.nussknacker.engine.api.process.ProcessObjectDependencies;
 import pl.touk.nussknacker.engine.api.process.SingleNodeConfig$;
 import pl.touk.nussknacker.engine.api.process.SinkFactory;
 import pl.touk.nussknacker.engine.api.process.SourceFactory;
@@ -26,13 +24,17 @@ import pl.touk.nussknacker.engine.api.process.WithCategories;
 import pl.touk.nussknacker.engine.api.signal.ProcessSignalSender;
 import pl.touk.nussknacker.engine.api.test.TestParsingUtils;
 import pl.touk.nussknacker.engine.demo.LoggingExceptionHandlerFactory;
+import pl.touk.nussknacker.engine.flink.api.timestampwatermark.StandardTimestampWatermarkHandler;
+import pl.touk.nussknacker.engine.flink.api.timestampwatermark.TimestampWatermarkHandler;
 import pl.touk.nussknacker.engine.javaapi.process.ExpressionConfig;
 import pl.touk.nussknacker.engine.javaapi.process.ProcessConfigCreator;
-import pl.touk.nussknacker.engine.kafka.KafkaConfig;
-import pl.touk.nussknacker.engine.kafka.KafkaSinkFactory;
-import pl.touk.nussknacker.engine.kafka.KafkaSourceFactory;
+import pl.touk.nussknacker.engine.kafka.serialization.KafkaSerializationSchemaFactory;
+import pl.touk.nussknacker.engine.kafka.serialization.schemas;
+import pl.touk.nussknacker.engine.kafka.sink.KafkaSinkFactory;
+import pl.touk.nussknacker.engine.kafka.source.KafkaSourceFactory;
 import scala.Option;
 import scala.collection.JavaConverters;
+import scala.reflect.ClassTag$;
 
 public class DemoProcessConfigCreator implements ProcessConfigCreator {
 
@@ -47,28 +49,25 @@ public class DemoProcessConfigCreator implements ProcessConfigCreator {
     }
 
     @Override
-    public Map<String, WithCategories<Service>> services(Config config) {
+    public Map<String, WithCategories<Service>> services(ProcessObjectDependencies processObjectDependencies) {
         Map<String, WithCategories<Service>> m = new HashMap<>();
         m.put("clientService", all(new ClientService()));
         return m;
     }
 
     @Override
-    public Map<String, WithCategories<SourceFactory<?>>> sourceFactories(Config config) {
-        KafkaConfig kafkaConfig = getKafkaConfig(config);
-        KafkaSourceFactory<Transaction> sourceFactory = getTransactionKafkaSourceFactory(kafkaConfig);
+    public Map<String, WithCategories<SourceFactory<?>>> sourceFactories(ProcessObjectDependencies processObjectDependencies) {
+        KafkaSourceFactory<Transaction> sourceFactory = getTransactionKafkaSourceFactory(processObjectDependencies);
         Map<String, WithCategories<SourceFactory<?>>> m = new HashMap<>();
         m.put("kafka-transaction", all(sourceFactory));
         return m;
     }
 
-    private KafkaSourceFactory<Transaction> getTransactionKafkaSourceFactory(KafkaConfig kafkaConfig) {
-        BoundedOutOfOrdernessTimestampExtractor<Transaction> extractor = new BoundedOutOfOrdernessTimestampExtractor<Transaction>(Time.minutes(10)) {
-            @Override
-            public long extractTimestamp(Transaction element) {
-                return element.eventDate;
-            }
-        };
+    private KafkaSourceFactory<Transaction> getTransactionKafkaSourceFactory(ProcessObjectDependencies processObjectDependencies) {
+        TimestampWatermarkHandler<Transaction> extractor = new StandardTimestampWatermarkHandler<>(WatermarkStrategy
+            .<Transaction>forBoundedOutOfOrderness(Duration.ofMinutes(10))
+            .withTimestampAssigner((SerializableTimestampAssigner<Transaction>) (element, recordTimestamp) -> element.eventDate));
+
         DeserializationSchema<Transaction> schema = new DeserializationSchema<Transaction>() {
             @Override
             public Transaction deserialize(byte[] message) throws IOException {
@@ -86,43 +85,33 @@ public class DemoProcessConfigCreator implements ProcessConfigCreator {
             }
         };
         return new KafkaSourceFactory<>(
-                kafkaConfig,
                 schema,
                 Option.apply(extractor),
                 TestParsingUtils.newLineSplit(),
-                TypeInformation.of(Transaction.class)
+                processObjectDependencies,
+                ClassTag$.MODULE$.apply(Transaction.class)
         );
     }
 
     @Override
-    public Map<String, WithCategories<SinkFactory>> sinkFactories(Config config) {
-        KafkaConfig kafkaConfig = getKafkaConfig(config);
-        KeyedSerializationSchema<Object> schema = new KeyedSerializationSchema<Object>() {
-            @Override
-            public byte[] serializeKey(Object element) {
-                return UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8);
-            }
-            @Override
-            public byte[] serializeValue(Object element) {
-                if (element instanceof String) {
-                    return ((String) element).getBytes(StandardCharsets.UTF_8);
-                } else {
-                    throw new RuntimeException("Sorry, only strings");
-                }
-            }
-            @Override
-            public String getTargetTopic(Object element) {
-                return null;
+    public Map<String, WithCategories<SinkFactory>> sinkFactories(ProcessObjectDependencies processObjectDependencies) {
+        schemas.ToStringSerializer<Object> serializer = element -> {
+            if (element instanceof String) {
+                return (String) element;
+            } else {
+                throw new RuntimeException("Sorry, only strings");
             }
         };
-        KafkaSinkFactory factory = new KafkaSinkFactory(kafkaConfig, schema);
+        KafkaSerializationSchemaFactory<Object> schema = (topic, kafkaConfig1) ->
+            new schemas.SimpleSerializationSchema<>(topic, serializer, null);
+        KafkaSinkFactory factory = new KafkaSinkFactory(schema, processObjectDependencies);
         Map<String, WithCategories<SinkFactory>> m = new HashMap<>();
         m.put("kafka-stringSink", all(factory));
         return m;
     }
 
     @Override
-    public Map<String, WithCategories<CustomStreamTransformer>> customStreamTransformers(Config config) {
+    public Map<String, WithCategories<CustomStreamTransformer>> customStreamTransformers(ProcessObjectDependencies processObjectDependencies) {
         Map<String, WithCategories<CustomStreamTransformer>> m = new HashMap<>();
         m.put("eventsCounter", all(new EventsCounter()));
         m.put("transactionAmountAggregator", all(new TransactionAmountAggregator()));
@@ -130,22 +119,22 @@ public class DemoProcessConfigCreator implements ProcessConfigCreator {
     }
 
     @Override
-    public Map<String, WithCategories<ProcessSignalSender>> signals(Config config) {
+    public Map<String, WithCategories<ProcessSignalSender>> signals(ProcessObjectDependencies processObjectDependencies) {
         return Collections.emptyMap();
     }
 
     @Override
-    public Collection<ProcessListener> listeners(Config config) {
+    public Collection<ProcessListener> listeners(ProcessObjectDependencies processObjectDependencies) {
         return Collections.emptyList();
     }
 
     @Override
-    public ExceptionHandlerFactory exceptionHandlerFactory(Config config) {
-        return new LoggingExceptionHandlerFactory(config);
+    public ExceptionHandlerFactory exceptionHandlerFactory(ProcessObjectDependencies processObjectDependencies) {
+        return new LoggingExceptionHandlerFactory(processObjectDependencies.config());
     }
 
     @Override
-    public ExpressionConfig expressionConfig(Config config) {
+    public ExpressionConfig expressionConfig(ProcessObjectDependencies processObjectDependencies) {
         return new ExpressionConfig(
                 Collections.singletonMap("UTIL", all(new UtilProcessHelper())),
                 Collections.emptyList()
@@ -155,14 +144,6 @@ public class DemoProcessConfigCreator implements ProcessConfigCreator {
     @Override
     public Map<String, String> buildInfo() {
         return Collections.emptyMap();
-    }
-
-    private KafkaConfig getKafkaConfig(Config config) {
-        return new KafkaConfig(
-                config.getString("kafka.kafkaAddress"),
-                Option.empty(),
-                Option.empty()
-        );
     }
 
 }

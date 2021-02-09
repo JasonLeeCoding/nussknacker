@@ -1,20 +1,23 @@
 package pl.touk.nussknacker.engine.standalone.management
 
+import java.util.concurrent.TimeUnit
+
 import sttp.client._
 import sttp.client.asynchttpclient.future.AsyncHttpClientFutureBackend
 import org.asynchttpclient.DefaultAsyncHttpClientConfig
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.LazyLogging
-import io.circe
-import pl.touk.nussknacker.engine.api.deployment.{DeploymentId, ProcessState, RunningState}
+import pl.touk.nussknacker.engine.api.deployment.simple.{SimpleProcessState, SimpleStateStatus}
+import pl.touk.nussknacker.engine.api.deployment.{DeploymentId, ProcessState}
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.engine.standalone.api.DeploymentData
 import sttp.client.circe._
 import pl.touk.nussknacker.engine.sttp.SttpJson
 import pl.touk.nussknacker.engine.sttp.SttpJson.asOptionalJson
-import sttp.model.{StatusCode, Uri}
+import sttp.model.Uri
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, ExecutionContext, Future}
 
 object StandaloneProcessClient {
 
@@ -22,13 +25,13 @@ object StandaloneProcessClient {
     implicit val backend: SttpBackend[Future, Nothing, NothingT] = AsyncHttpClientFutureBackend.usingConfig(new DefaultAsyncHttpClientConfig.Builder().build())
 
     val managementUrls = config.getString("managementUrl").split(",").map(_.trim).toList
-    val clients = managementUrls.map(new DispatchStandaloneProcessClient(_))
+    val clients = managementUrls.map(new HttpStandaloneProcessClient(_))
     new MultiInstanceStandaloneProcessClient(clients)
   }
 
 }
 
-trait StandaloneProcessClient {
+trait StandaloneProcessClient extends AutoCloseable {
 
   def deploy(deploymentData: DeploymentData): Future[Unit]
 
@@ -43,7 +46,6 @@ trait StandaloneProcessClient {
 class MultiInstanceStandaloneProcessClient(clients: List[StandaloneProcessClient]) extends StandaloneProcessClient with LazyLogging {
 
   private implicit val ec: ExecutionContext = ExecutionContext.Implicits.global
-
 
   override def deploy(deploymentData: DeploymentData): Future[Unit] = {
     Future.sequence(clients.map(_.deploy(deploymentData))).map(_ => ())
@@ -63,19 +65,25 @@ class MultiInstanceStandaloneProcessClient(clients: List[StandaloneProcessClient
           logger.warn(s"Inconsistent states found: $a")
           val warningMessage = a.map {
             case None => "empty"
-            case Some(state) => s"state: ${state.status}, startTime: ${state.startTime}"
+            case Some(state) => s"state: ${state.status.name}, startTime: ${state.startTime.getOrElse(None)}"
           }.mkString("; ")
-          Some(ProcessState(DeploymentId(name.value), runningState = RunningState.Error, "INCONSISTENT", 0L, None,
-            message = Some(s"Inconsistent states between servers: $warningMessage")))
+          Some(SimpleProcessState(
+            DeploymentId(name.value),
+            SimpleStateStatus.Failed,
+            errors = List(s"Inconsistent states between servers: $warningMessage.")
+          ))
       }
     }
   }
 
+  override def close(): Unit = {
+    clients.foreach(_.close())
+  }
 }
 
-class DispatchStandaloneProcessClient(managementUrl: String)(implicit backend: SttpBackend[Future, Nothing, NothingT]) extends StandaloneProcessClient {
+class HttpStandaloneProcessClient(managementUrl: String)(implicit backend: SttpBackend[Future, Nothing, NothingT]) extends StandaloneProcessClient {
 
-  private val managementUri = Uri.parse(managementUrl).get
+  private val managementUri = uri"$managementUrl"
 
   private implicit val ec: ExecutionContext = ExecutionContext.Implicits.global
 
@@ -101,6 +109,8 @@ class DispatchStandaloneProcessClient(managementUrl: String)(implicit backend: S
       .send()
       .flatMap(SttpJson.failureToFuture)
   }
+
+  override def close(): Unit = Await.result(backend.close(), Duration(10, TimeUnit.SECONDS))
 
 }
 

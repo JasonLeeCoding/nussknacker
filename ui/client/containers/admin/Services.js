@@ -1,37 +1,39 @@
 import React from "react"
-import {withRouter} from 'react-router-dom'
-import "../../stylesheets/processes.styl"
+import JSONTree from "react-json-tree"
 import {connect} from "react-redux"
-import JSONTree from 'react-json-tree'
+import {withRouter} from "react-router-dom"
 import ActionsUtils from "../../actions/ActionsUtils"
-import ProcessUtils from "../../common/ProcessUtils"
-import HttpService from "../../http/HttpService"
 import * as JsonUtils from "../../common/JsonUtils"
+import ProcessUtils from "../../common/ProcessUtils"
+import {InputWithFocus, SelectWithFocus} from "../../components/withFocus"
+import HttpService from "../../http/HttpService"
+import "../../stylesheets/processes.styl"
 import BaseAdminTab from "./BaseAdminTab"
+import _ from "lodash"
 
 class Services extends BaseAdminTab {
 
   jsonTreeTheme = {
     label: {
-      fontWeight: 'normal',
+      fontWeight: "normal",
     },
     tree: {
-      backgroundColor: 'none'
-    }
+      backgroundColor: "none",
+    },
   }
 
   constructor(props) {
     super(props)
     this.state = {
       services: [],
-      processingType: '',
-      serviceName: '',
+      processingType: "",
+      serviceName: "",
       nodeParameters: {},
       parametersValues: [],
       queryResult: {
         response: {},
-        errorMessage: null
-      }
+        errorMessage: null,
+      },
     }
   }
 
@@ -46,12 +48,12 @@ class Services extends BaseAdminTab {
     const cachedParams = this.cachedServiceParams(service.name, service.processingType)
 
     const initializeParameter = paramName => _.find(cachedParams, cp => cp.name === paramName) || {
-      "name": paramName,
-      "expression": {
+      name: paramName,
+      expression: {
         //TODO: is it always fixed?
-        "language": "spel",
-        "expression": ""
-      }
+        language: "spel",
+        expression: "",
+      },
     }
 
     const initializeParametersValues = params => _.map(params, p => initializeParameter(p.name))
@@ -63,16 +65,17 @@ class Services extends BaseAdminTab {
         parametersValues: initializeParametersValues(service.parameters || []),
         queryResult: {
           response: {},
-          errorMessage: null
-        }
-      })
+          errorMessage: null,
+        },
+      }
+    )
   }
 
   serviceList() {
     return (
-      <select className="node-input" onChange={e => this.setService(e.target.value)}>
+      <SelectWithFocus className="node-input" onChange={e => this.setService(e.target.value)}>
         {this.state.services.map((service, idx) => <option key={idx} value={idx}>{service.name}</option>)}
-      </select>
+      </SelectWithFocus>
     )
   }
 
@@ -86,20 +89,18 @@ class Services extends BaseAdminTab {
 
     return (
       <span>
-        {_.map(params, (param) =>
-          this.formRow(
-            "param_" + param.name,
-            <span>{param.name}
-              <div className="labelFooter">{ProcessUtils.humanReadableType(param.refClazzName)}</div></span>,
-            <span>
-              <input
-                className="node-input"
-                value={this.findParamExpression(param.name)}
-                onChange={e => setParam(param.name)(e.target.value)}
-              />
-            </span>
-          )
-        )}
+        {_.map(params, (param) => this.formRow(
+          `param_${  param.name}`,
+          <span>{param.name}
+            <div className="labelFooter">{ProcessUtils.humanReadableType(param.typ)}</div></span>,
+          <span>
+            <InputWithFocus
+              className="node-input"
+              value={this.findParamExpression(param.name)}
+              onChange={e => setParam(param.name)(e.target.value)}
+            />
+          </span>,
+        ))}
       </span>
     )
   }
@@ -108,7 +109,7 @@ class Services extends BaseAdminTab {
     HttpService.invokeService(
       this.state.processingType,
       this.state.serviceName,
-      this.state.parametersValues
+      this.state.parametersValues,
     ).then(response => {
       this.cacheServiceParams(this.state.serviceName, this.state.processingType, this.state.parametersValues)
       this.setState({queryResult: {response: response.data, errorMessage: null}})
@@ -148,7 +149,7 @@ class Services extends BaseAdminTab {
   }
 
   render() {
-    const readonly = value => <input readOnly={true} type="text" className="node-input" value={value}/>
+    const readonly = value => <InputWithFocus readOnly={true} type="text" className="node-input" value={value}/>
     return (
       <div>
         <div className="modalContentDye">
@@ -166,7 +167,7 @@ class Services extends BaseAdminTab {
             !_.isEmpty(this.state.queryResult.response) ? [
               this.prettyPrint("serviceResult", this.state.queryResult.response.result, "Service result"),
               <hr key="separator"/>,
-              this.prettyPrint("collectedResults", JsonUtils.removeEmptyProperties(this.state.queryResult.response.collectedResults), "Collected results")
+              this.prettyPrint("collectedResults", JsonUtils.removeEmptyProperties(this.state.queryResult.response.collectedResults), "Collected results"),
             ] : null
           }
           {this.state.queryResult.errorMessage ?
@@ -178,7 +179,7 @@ class Services extends BaseAdminTab {
 
   prettyPrint(id, json, title) {
     if (this.hasSomeValue(json)) {
-      const data = _.isObject(json) ? json : {"result": json}
+      const data = _.isObject(json) ? json : {result: json}
 
       return (
         <div key={id}>
@@ -199,7 +200,7 @@ class Services extends BaseAdminTab {
 
   hasSomeValue = (o) => {
     //_.isEmpty(123) returns true... more: https://github.com/lodash/lodash/issues/496
-    return (_.isNumber(o) || _.isBoolean(o)) || !_.isEmpty(o)
+    return _.isNumber(o) || _.isBoolean(o) || !_.isEmpty(o)
   }
 }
 
@@ -208,19 +209,12 @@ Services.key = "services"
 
 export function mapProcessDefinitionToServices(services) {
   return _.sortBy(
-    _.flatMap(services, (typeServices, processingType) =>
-      _.map(typeServices, (service, name) => ({
-          name: name,
-          categories: service.categories,
-          parameters: _.map(service.parameters, p => ({
-            name: p.name,
-            refClazzName: p.typ.refClazzName
-          })),
-          returnClassName: service.returnType == null ? null : service.returnType.refClazzName,
-          processingType: processingType
-        })
-      )
-    ), s => s.name
+    _.flatMap(services, (typeServices, processingType) => _.map(typeServices, (service, name) => ({
+      name: name,
+      categories: service.categories,
+      parameters: service.parameters,
+      processingType: processingType,
+    }))), s => s.name,
   )
 }
 

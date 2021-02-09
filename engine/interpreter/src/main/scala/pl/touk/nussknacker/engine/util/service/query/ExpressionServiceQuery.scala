@@ -3,14 +3,15 @@ package pl.touk.nussknacker.engine.util.service.query
 import cats.data.NonEmptyList
 import cats.data.Validated.{Invalid, Valid}
 import pl.touk.nussknacker.engine.ModelData
-import pl.touk.nussknacker.engine.api.context.{PartSubGraphCompilationError, ValidationContext}
-import pl.touk.nussknacker.engine.api.{Context, MetaData}
-import pl.touk.nussknacker.engine.compile.ExpressionCompiler
+import pl.touk.nussknacker.engine.api.Context
 import pl.touk.nussknacker.engine.api.context.ProcessCompilationError.NodeId
+import pl.touk.nussknacker.engine.api.context.{PartSubGraphCompilationError, ValidationContext}
+import pl.touk.nussknacker.engine.compile.ExpressionCompiler
 import pl.touk.nussknacker.engine.expression.ExpressionEvaluator
 import pl.touk.nussknacker.engine.graph.evaluatedparam
 import pl.touk.nussknacker.engine.graph.expression.Expression
 import pl.touk.nussknacker.engine.util.service.query.ServiceQuery.QueryResult
+import pl.touk.nussknacker.engine.variables.GlobalVariablesPreparer
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -18,7 +19,8 @@ class ExpressionServiceQuery(
                               serviceQuery: ServiceQuery,
                               ctx: Context,
                               expressionEvaluator: ExpressionEvaluator,
-                              expressionCompiler: ExpressionCompiler
+                              expressionCompiler: ExpressionCompiler,
+                              globalVariablesPreparer: GlobalVariablesPreparer
                             ) {
 
   import ExpressionServiceQuery._
@@ -31,14 +33,11 @@ class ExpressionServiceQuery(
 
   def invoke(serviceName: String,params: List[evaluatedparam.Parameter])
             (implicit executionContext: ExecutionContext): Future[QueryResult] = {
-    expressionCompiler.compileValidatedObjectParameters(params, ValidationContext.empty) match {
-      case Valid(p) => expressionEvaluator
-        .evaluateParameters(p, ctx)(nodeId,ServiceQuery.jobData.metaData, executionContext)
-        .flatMap {
-          case (_, vars) =>
-            serviceQuery
-              .invoke(serviceName, vars.toList: _*)
-        }
+    val metaData = ServiceQuery.jobData.metaData
+    expressionCompiler.compileValidatedObjectParameters(params, globalVariablesPreparer.emptyValidationContext(metaData)) match {
+      case Valid(p) =>
+        val (_, vars) = expressionEvaluator.evaluateParameters(p, ctx)(nodeId, metaData)
+        serviceQuery.invoke(serviceName, vars.toList: _*)
       case Invalid(e) => Future.failed(ParametersCompilationException(e))
     }
   }
@@ -54,23 +53,9 @@ object ExpressionServiceQuery {
     new ExpressionServiceQuery(
       serviceQuery = serviceQuery,
       ctx = context,
-      expressionEvaluator = expressionEvaluator(modelData),
-      expressionCompiler = expressionCompiler(modelData)
+      expressionEvaluator = ExpressionEvaluator.unOptimizedEvaluator(modelData),
+      expressionCompiler = ExpressionCompiler.withoutOptimization(modelData),
+      GlobalVariablesPreparer(modelData.processWithObjectsDefinition.expressionConfig)
     )
 
-  //TODO: extract shared part with TestInfoProvider
-  private def expressionEvaluator(modelData: ModelData): ExpressionEvaluator = ExpressionEvaluator
-    .withoutLazyVals(
-      modelData
-        .configCreator
-        .expressionConfig(modelData.processConfig)
-        .globalProcessVariables
-        .mapValues(_.value), List())
-
-  private def expressionCompiler(modelData: ModelData) = {
-    ExpressionCompiler.withoutOptimization(
-      modelData.modelClassLoader.classLoader,
-      modelData.dictServices.dictRegistry,
-      modelData.processDefinition.expressionConfig)
-  }
 }

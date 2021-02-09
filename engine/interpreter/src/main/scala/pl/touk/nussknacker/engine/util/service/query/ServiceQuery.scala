@@ -3,12 +3,12 @@ package pl.touk.nussknacker.engine.util.service.query
 import java.util.UUID
 
 import pl.touk.nussknacker.engine.ModelData
-import pl.touk.nussknacker.engine.api._
-import pl.touk.nussknacker.engine.api.process.WithCategories
+import pl.touk.nussknacker.engine.api.context.ProcessCompilationError.NodeId
 import pl.touk.nussknacker.engine.api.test.InvocationCollectors.{NodeContext, QueryServiceInvocationCollector, QueryServiceResult}
 import pl.touk.nussknacker.engine.api.test.TestRunId
+import pl.touk.nussknacker.engine.api.{process, _}
 import pl.touk.nussknacker.engine.definition.DefinitionExtractor.ObjectWithMethodDef
-import pl.touk.nussknacker.engine.definition.{ProcessDefinitionExtractor, ProcessObjectDefinitionExtractor, ServiceInvoker}
+import pl.touk.nussknacker.engine.definition.{DefaultServiceInvoker, ProcessDefinitionExtractor, ProcessObjectDefinitionExtractor}
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -16,7 +16,6 @@ import scala.concurrent.{ExecutionContext, Future}
 class ServiceQuery(modelData: ModelData) {
 
   import ServiceQuery._
-  import pl.touk.nussknacker.engine.util.Implicits._
 
 
   def invoke(serviceName: String, serviceParameters: (String, Any)*)
@@ -24,7 +23,7 @@ class ServiceQuery(modelData: ModelData) {
 
     //this map has to be created for each invocation, because we close service after invocation (to avoid connection leaks etc.)
     val serviceMethodMap: Map[String, ObjectWithMethodDef] = modelData.withThisAsContextClassLoader {
-      val servicesMap = modelData.configCreator.services(modelData.processConfig)
+      val servicesMap = modelData.configCreator.services(process.ProcessObjectDependencies(modelData.processConfig, modelData.objectNaming))
       ObjectWithMethodDef.forMap(servicesMap, ProcessObjectDefinitionExtractor.service,
         ProcessDefinitionExtractor.extractNodesConfig(modelData.processConfig))
     }
@@ -36,7 +35,8 @@ class ServiceQuery(modelData: ModelData) {
     lifecycle.open(jobData)
     val runId = TestRunId(UUID.randomUUID().toString)
     val collector = QueryServiceInvocationCollector(serviceName).enable(runId)
-    val invocationResult = ServiceInvoker(serviceDef, Some(collector)).invoke(serviceParameters.toMap, dummyNodeContext)
+    val invocationResult = DefaultServiceInvoker(metaData, NodeId(dummyNodeContext.nodeId), None, serviceDef)
+      .invokeService(serviceParameters.toMap)(executionContext, collector, ContextId(dummyNodeContext.contextId))
     val queryResult = invocationResult.map { ff =>
       QueryResult(ff, collector.getResults)
     }.recover { case ex: Exception =>
@@ -49,8 +49,8 @@ class ServiceQuery(modelData: ModelData) {
     queryResult
   }
   private def closableService(methodDef: ObjectWithMethodDef): Lifecycle = {
-    methodDef match {
-      case ObjectWithMethodDef(lifecycle: Lifecycle, _, _) => lifecycle
+    methodDef.obj match {
+      case lifecycle: Lifecycle => lifecycle
       case _ => throw new IllegalArgumentException
     }
   }

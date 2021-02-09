@@ -34,6 +34,7 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
         .exceptionHandler()
         .source("a", "")
         .filter("b", "alamakota == 'true'", nestedGraph("b"))
+        .customNode("b", "alamakota == 'true'", "someRef")
         .buildVariable("c", "fooVar", "f1" -> "expr1", "f2" -> "expr2")
         .enricher("d", "barVar", "dService", "p1" -> "expr3")
         .switch("f", "expr4", "eVar", nestedGraph("e"), Case("e1", GraphBuilder.emptySink("endE1", "")))
@@ -55,13 +56,25 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
     result should equal(Some(process))
   }
 
+  it should "marshall and unmarshall to same process with ending custom node" in {
+    val process = EspProcessBuilder
+      .id("process1")
+      .exceptionHandler()
+      .source("a", "")
+      .endingCustomNode("d", None, "endingCustomNode", "p1" -> "expr3")
+
+    val result = marshallAndUnmarshall(process)
+
+    result should equal(Some(process))
+  }
+  
   it should "marshall and unmarshall to same process with additional fields" in {
     val processAdditionalFields = Table(
       "processAditionalFields",
-      ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map("customProperty" -> "customPropertyValue")),
-      ProcessAdditionalFields(description = None, groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map("customProperty" -> "customPropertyValue")),
+      ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map("customProperty" -> "customPropertyValue")),
+      ProcessAdditionalFields(description = None, groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map("customProperty" -> "customPropertyValue")),
       ProcessAdditionalFields(description = Some("process description"), groups = Set.empty, properties = Map("customProperty" -> "customPropertyValue")),
-      ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map.empty),
+      ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map.empty),
       ProcessAdditionalFields(description = None, groups = Set.empty, properties = Map.empty)
     )
 
@@ -83,19 +96,19 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
     val marshalledAndUnmarshalledFields = Table(
       ("marshalled", "unmarshalled"),
       ("""{ "description" : "process description", "groups" : [ { "id" : "4", "nodes" : [ "10", "20" ] } ], "properties" : { "customProperty" : "customPropertyValue" } }""",
-        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map("customProperty" -> "customPropertyValue"))),
+        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map("customProperty" -> "customPropertyValue"))),
       ("""{ "groups" : [ { "id" : "4", "nodes" : [ "10", "20" ] } ], "description" : "process description", "properties" : { "customProperty" : "customPropertyValue" } }""",
-        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map("customProperty" -> "customPropertyValue"))),
+        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map("customProperty" -> "customPropertyValue"))),
       ("""{ "groups" : [ { "id" : "4", "nodes" : [ "10", "20" ] } ], "properties" : { "customProperty" : "customPropertyValue" } }""",
-        ProcessAdditionalFields(description = None, groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map("customProperty" -> "customPropertyValue"))),
+        ProcessAdditionalFields(description = None, groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map("customProperty" -> "customPropertyValue"))),
       ("""{ "description" : "process description", "groups" : [], "properties" : { "customProperty" : "customPropertyValue" } }""",
         ProcessAdditionalFields(description = Some("process description"), groups = Set.empty, properties = Map("customProperty" -> "customPropertyValue"))),
       ("""{ "description" : "process description", "properties" : { "customProperty" : "customPropertyValue" } }""",
         ProcessAdditionalFields(description = Some("process description"), groups = Set.empty, properties = Map("customProperty" -> "customPropertyValue"))),
       ("""{ "description" : "process description", "groups" : [ { "id" : "4", "nodes" : [ "10", "20" ] } ] }""",
-        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map.empty)),
+        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map.empty)),
       ("""{ "description" : "process description", "groups" : [ { "id" : "4", "nodes" : [ "10", "20" ] } ], "properties": {} }""",
-        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"))), properties = Map.empty))
+        ProcessAdditionalFields(description = Some("process description"), groups = Set(Group(id = "4", nodes = Set("10", "20"), None, None)), properties = Map.empty))
     )
 
     forAll(marshalledAndUnmarshalledFields) { (marshalled: String, unmarshaled: ProcessAdditionalFields) =>
@@ -114,7 +127,7 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
     inside(ProcessMarshaller.fromJson(processJson)) { case Valid(process) =>
       process.metaData.id shouldBe "custom"
       process.nodes should have size 1
-      process.nodes.head.data.additionalFields shouldBe Some(UserDefinedAdditionalNodeFields(description = Some("single node description")))
+      process.nodes.head.data.additionalFields shouldBe Some(UserDefinedAdditionalNodeFields(description = Some("single node description"), None))
     }
   }
 
@@ -137,7 +150,7 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
       process.metaData.id shouldBe "custom"
       process.metaData.additionalFields shouldBe Some(ProcessAdditionalFields(description = None, groups = Set.empty, properties = Map.empty))
       process.nodes should have size 1
-      process.nodes.head.data.additionalFields shouldBe Some(UserDefinedAdditionalNodeFields(description = None))
+      process.nodes.head.data.additionalFields shouldBe Some(UserDefinedAdditionalNodeFields(description = None, None))
     }
   }
 
@@ -151,10 +164,8 @@ class ProcessMarshallerSpec extends FlatSpec with Matchers with OptionValues wit
     val source = FlatNode(Source("s1", SourceRef("a", List())))
 
     checkOneInvalid("filter", source, canonicalnode.FilterNode(Filter("filter", Expression("", "")), List()))
-    checkOneInvalid("custom", source, canonicalnode.FlatNode(CustomNode("custom", Some("out"), "t1", List())))
     checkOneInvalid("split", source, canonicalnode.SplitNode(Split("split"), List.empty))
     checkOneInvalid("switch", source, canonicalnode.SwitchNode(Switch("switch", Expression("", ""), ""), List.empty, List.empty))
-
   }
 
   private def marshallAndUnmarshall(process: EspProcess): Option[EspProcess] = {

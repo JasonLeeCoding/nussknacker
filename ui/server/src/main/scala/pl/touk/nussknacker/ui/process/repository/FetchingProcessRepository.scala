@@ -4,7 +4,7 @@ import cats.Monad
 import pl.touk.nussknacker.engine.ProcessingTypeData.ProcessingType
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.restmodel.process.ProcessId
-import pl.touk.nussknacker.restmodel.processdetails.{BaseProcessDetails, DeploymentHistoryEntry, ProcessShapeFetchStrategy}
+import pl.touk.nussknacker.restmodel.processdetails.{BaseProcessDetails, ProcessAction, ProcessShapeFetchStrategy}
 import pl.touk.nussknacker.ui.EspError.XError
 import pl.touk.nussknacker.ui.db.entity.{ProcessEntityData, ProcessVersionEntityData}
 import pl.touk.nussknacker.ui.process.repository.ProcessRepository.ProcessNotFoundError
@@ -19,7 +19,7 @@ abstract class FetchingProcessRepository[F[_]: Monad] extends ProcessRepository[
   def fetchLatestProcessDetailsForProcessId[PS: ProcessShapeFetchStrategy](id: ProcessId, businessView: Boolean = false)
                                                                           (implicit loggedUser: LoggedUser, ec: ExecutionContext): F[Option[BaseProcessDetails[PS]]]
 
-  def fetchLatestProcessDetailsForProcessIdEither[PS: ProcessShapeFetchStrategy](id: ProcessId, businessView: Boolean = false)
+  def fetchLatestProcessDetailsForProcessIdEither[PS: ProcessShapeFetchStrategy](id: ProcessId)
                                                                                 (implicit loggedUser: LoggedUser, ec: ExecutionContext): F[XError[BaseProcessDetails[PS]]] = {
     fetchLatestProcessDetailsForProcessId(id).map[XError[BaseProcessDetails[PS]]] {
       case None => Left(ProcessNotFoundError(id.value.toString))
@@ -35,13 +35,18 @@ abstract class FetchingProcessRepository[F[_]: Monad] extends ProcessRepository[
 
   def fetchProcesses[PS: ProcessShapeFetchStrategy]()(implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
 
-  def fetchProcesses[PS: ProcessShapeFetchStrategy](isSubprocess: Option[Boolean], isArchived: Option[Boolean],
-                                                    isDeployed: Option[Boolean], categories: Option[Seq[String]], processingTypes: Option[Seq[String]])
+  def fetchProcesses[PS: ProcessShapeFetchStrategy](isSubprocess: Option[Boolean],
+                                                    isArchived: Option[Boolean],
+                                                    isDeployed: Option[Boolean],
+                                                    categories: Option[Seq[String]],
+                                                    processingTypes: Option[Seq[String]])
                                                    (implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
 
   def fetchCustomProcesses[PS: ProcessShapeFetchStrategy]()(implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
 
   def fetchProcessesDetails[PS: ProcessShapeFetchStrategy]()(implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
+
+  def fetchDeployedProcessesDetails[PS: ProcessShapeFetchStrategy]()(implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
 
   def fetchProcessesDetails[PS: ProcessShapeFetchStrategy](processNames: List[ProcessName])
                                                           (implicit loggedUser: LoggedUser, ec: ExecutionContext): F[List[BaseProcessDetails[PS]]]
@@ -56,7 +61,7 @@ abstract class FetchingProcessRepository[F[_]: Monad] extends ProcessRepository[
 
   def fetchProcessName(processId: ProcessId)(implicit ec: ExecutionContext): F[Option[ProcessName]]
 
-  def fetchDeploymentHistory(processId: ProcessId)(implicit ec: ExecutionContext): F[List[DeploymentHistoryEntry]]
+  def fetchProcessActions(processId: ProcessId)(implicit ec: ExecutionContext): F[List[ProcessAction]]
 
   def fetchProcessingType(processId: ProcessId)(implicit loggedUser: LoggedUser, ec: ExecutionContext): F[ProcessingType]
 

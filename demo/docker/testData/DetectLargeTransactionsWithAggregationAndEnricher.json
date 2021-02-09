@@ -11,13 +11,6 @@
   },
   "exceptionHandlerRef" : {
     "parameters" : [
-      {
-        "name" : "sampleParam",
-        "expression" : {
-          "language" : "spel",
-          "expression" : "'1'"
-        }
-      }
     ]
   },
   "nodes" : [
@@ -53,7 +46,7 @@
           },
           {
             "type" : "Sink",
-            "id" : "save to elastic",
+            "id" : "save to kafka",
             "ref" : {
               "typ" : "kafka-stringSink",
               "parameters" : [

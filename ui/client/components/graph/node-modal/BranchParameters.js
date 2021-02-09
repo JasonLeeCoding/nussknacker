@@ -1,70 +1,89 @@
 import PropTypes from "prop-types"
 import React from "react"
-import ExpressionSuggest from "../ExpressionSuggest"
-import {errorValidator, notEmptyValidator} from "../../../common/Validators";
+import ExpressionField from "./editors/expression/ExpressionField"
+import ProcessUtils from "../../../common/ProcessUtils"
 
 const BranchParameters = (props) => {
 
-  const {node, joinDef, onChange, isMarked, readOnly, showValidation, errors} = props
+  const {node, isMarked, showValidation, errors, showSwitch, isEditMode,
+    parameterDefinitions, setNodeDataAt, testResultsToShow, testResultsToHide, toggleTestResult, findAvailableVariables} = props
 
+  //TODO: maybe we can rely only on node?
+  const branchParameters = parameterDefinitions?.filter(p => p.branchParam)
   return (
-    joinDef.branchParameters.map((branchParamDef, paramIndex) => {
+    branchParameters?.map((param) => {
+      const paramName = param.name
       return (
-        <div className="node-row" key={branchParamDef.name}>
-          <div className="node-label" title={branchParamDef.name}>{branchParamDef.name}:</div>
+        <div className="node-row" key={paramName}>
+          <div className="node-label" title={paramName}>{paramName}:</div>
           <div className="node-value">
             <div className="fieldsControl">
               {
-                joinDef.incomingEdges.map((edge, edgeIndex) => {
-                  // It could be tricky - we assume that node data is filled by template (or actual values)
-                  // in the same order as here, but it is true because for filling is used the same JoinDef
-                  const path = `branchParameters[${edgeIndex}].parameters[${paramIndex}]`
-                  const paramValue = node.branchParameters[edgeIndex].parameters[paramIndex]
-                  const fieldName = `value-${branchParamDef.name}-${edge.from}`;
-                  return (
-                    <div className="branch-parameter-row movable-row" key={`${branchParamDef.name}-${edge.from}`}>
-                      <div className={"read-only"}>{edge.from}</div>
-                      <div className={"node-value field"}>
-                        <ExpressionSuggest
-                          fieldName={fieldName}
-                          inputProps={{
-                            onValueChange: ((value) => onChange(`${path}.expression.expression`, value)),
-                            value: paramValue.expression.expression,
-                            language: paramValue.expression.language,
-                            readOnly
-                          }}
-                          validators={[notEmptyValidator, errorValidator(errors, branchErrorFieldName(branchParamDef.name, edge.from))]}
-                          isMarked={isMarked(path)}
+                node.branchParameters.map((branchParameter, branchIndex) => {
+                  const branchId = branchParameter.branchId
+                  //here we assume the parameters are correct wrt branch definition. If this is not the case,
+                  //differences should be handled on other level, e.g. using reducers etc.
+                  const paramIndex = branchParameter.parameters.findIndex(paramInBranch => paramInBranch.name === paramName)
+                  const paramValue = branchParameter.parameters[paramIndex]
+                  const expressionPath = `branchParameters[${branchIndex}].parameters[${paramIndex}].expression`
+
+                  const contextId = ProcessUtils.findContextForBranch(node, branchId)
+                  const variables = findAvailableVariables(contextId, param)
+
+                  return paramValue ? (
+                    <div className="branch-parameter-row" key={`${paramName}-${branchId}`}>
+                      <div className={"branch-param-label"}>{branchId}</div>
+                      <div className={"branch-parameter-expr-container"}>
+                        <ExpressionField
+                          fieldName={branchErrorFieldName(paramName, branchId)}
+                          fieldLabel={paramName}
+                          exprPath={expressionPath}
+                          isEditMode={isEditMode}
+                          editedNode={node}
+                          isMarked={isMarked}
                           showValidation={showValidation}
+                          showSwitch={showSwitch}
+                          parameterDefinition={param}
+                          setNodeDataAt={setNodeDataAt}
+                          testResultsToShow={testResultsToShow}
+                          testResultsToHide={testResultsToHide}
+                          toggleTestResult={toggleTestResult}
+                          renderFieldLabel={() => false}
+                          variableTypes={variables}
+                          errors={errors}
                         />
                       </div>
                     </div>
-                  )
-                  }
-                )
+                  ) : null
+                })
               }
             </div>
           </div>
         </div>
-      );
+      )
     }))
 }
 
 BranchParameters.propTypes = {
   node: PropTypes.object.isRequired,
-  joinDef: PropTypes.object.isRequired,
-  onChange: PropTypes.func.isRequired,
   isMarked: PropTypes.func.isRequired,
-  readOnly: PropTypes.bool,
-  showValidation: PropTypes.bool.isRequired
+  isEditMode: PropTypes.bool,
+  showValidation: PropTypes.bool.isRequired,
+  showSwitch: PropTypes.bool,
+  parameterDefinitions: PropTypes.array.isRequired,
+  setNodeDataAt: PropTypes.func.isRequired,
+  testResultsToShow: PropTypes.any,
+  testResultsToHide: PropTypes.any,
+  toggleTestResult: PropTypes.func.isRequired,
+  findAvailableVariables: PropTypes.func.isRequired,
 }
 
 BranchParameters.defaultProps = {
-  readOnly: false
+  readOnly: false,
 }
 
 export default BranchParameters
 
 export const branchErrorFieldName = (paramName, branch) => {
-  return `${paramName}` + " for branch " + `${branch}`;
+  return `${paramName} for branch ${branch}`
 }

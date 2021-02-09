@@ -1,35 +1,43 @@
 package pl.touk.nussknacker.engine.process.compiler
 
-import com.typesafe.config.Config
+import org.apache.flink.api.common.serialization.DeserializationSchema
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.streaming.api.scala.{ConnectedStreams, DataStream}
-import org.apache.flink.api.common.serialization.DeserializationSchema
-import pl.touk.nussknacker.engine.api.process.ProcessConfigCreator
+import pl.touk.nussknacker.engine.api.namespaces.ObjectNaming
+import pl.touk.nussknacker.engine.api.process.{ProcessConfigCreator, ProcessObjectDependencies}
 import pl.touk.nussknacker.engine.api.typed.{ReturningType, typing}
-import pl.touk.nussknacker.engine.definition.DefinitionExtractor.ObjectWithMethodDef
+import pl.touk.nussknacker.engine.definition.DefinitionExtractor.{ObjectWithMethodDef, OverriddenObjectWithMethodDef}
 import pl.touk.nussknacker.engine.definition.ProcessDefinitionExtractor
 import pl.touk.nussknacker.engine.flink.api.process.SignalSenderKey
 import pl.touk.nussknacker.engine.flink.api.signal.FlinkProcessSignalSender
 import pl.touk.nussknacker.engine.flink.util.source.EmptySourceFunction
 import pl.touk.nussknacker.engine.graph.EspProcess
 import pl.touk.nussknacker.engine.graph.node.Source
+import pl.touk.nussknacker.engine.modelconfig.{InputConfigDuringExecution, ModelConfigLoader}
 import shapeless.syntax.typeable._
 
-abstract class StubbedFlinkProcessCompiler(process: EspProcess, creator: ProcessConfigCreator, config: Config)
-  extends FlinkStreamingProcessCompiler(creator, config, diskStateBackendSupport = false) {
+abstract class StubbedFlinkProcessCompiler(process: EspProcess,
+                                           creator: ProcessConfigCreator,
+                                           inputConfigDuringExecution: InputConfigDuringExecution,
+                                           modelConfigLoader: ModelConfigLoader,
+                                           objectNaming: ObjectNaming)
+  extends FlinkProcessCompiler(creator, inputConfigDuringExecution, modelConfigLoader, diskStateBackendSupport = false, objectNaming) {
 
   import pl.touk.nussknacker.engine.util.Implicits._
 
-  override protected def signalSenders: Map[SignalSenderKey, FlinkProcessSignalSender] =
-    super.signalSenders.mapValuesNow(_ => DummyFlinkSignalSender)
+  override protected def signalSenders(processObjectDependencies: ProcessObjectDependencies): Map[SignalSenderKey, FlinkProcessSignalSender] =
+    super.signalSenders(processObjectDependencies).mapValuesNow(_ => DummyFlinkSignalSender)
 
 
-  override protected def definitions(): ProcessDefinitionExtractor.ProcessDefinition[ObjectWithMethodDef] = {
-    val createdDefinitions = super.definitions()
+  override protected def definitions(processObjectDependencies: ProcessObjectDependencies): ProcessDefinitionExtractor.ProcessDefinition[ObjectWithMethodDef] = {
+    val createdDefinitions = super.definitions(processObjectDependencies)
 
     //FIXME: asInstanceOf, should be proper handling of SubprocessInputDefinition
-    //TODO JOIN: handling multiple sources?
-    val sourceType = process.roots.head.data.asInstanceOf[Source].ref.typ
+    //TODO JOIN: handling multiple sources - currently we take only first?
+    val sourceType = process.roots.toList.map(_.data).collectFirst {
+      case source: Source => source
+    }.map(_.ref.typ).getOrElse(throw new IllegalArgumentException("No source found - cannot test"))
+
     val testSource = createdDefinitions.sourceFactories.get(sourceType)
       .map(prepareSourceFactory)
       .getOrElse(throw new IllegalArgumentException(s"Source $sourceType cannot be stubbed - missing definition"))
@@ -49,12 +57,12 @@ abstract class StubbedFlinkProcessCompiler(process: EspProcess, creator: Process
 
   protected def prepareSourceFactory(sourceFactory: ObjectWithMethodDef) : ObjectWithMethodDef
 
-  protected def overrideObjectWithMethod(original: ObjectWithMethodDef, method: (String => Option[AnyRef], Option[String], Seq[AnyRef], () => typing.TypingResult) => Any): ObjectWithMethodDef =
-    new ObjectWithMethodDef(original.obj, original.methodDef, original.objectDefinition) {
-      override def invokeMethod(paramFun: (String) => Option[AnyRef], outputVariableNameOpt: Option[String], additional: Seq[AnyRef]): Any =
-        method(paramFun, outputVariableNameOpt, additional, () => {
-          //this is neeeded to be able to handle dynamic types in tests
-          super.invokeMethod(paramFun, outputVariableNameOpt, additional).cast[ReturningType].map(_.returnType).getOrElse(original.returnType)
+  protected def overrideObjectWithMethod(original: ObjectWithMethodDef, method: (Map[String, Any], Option[String], Seq[AnyRef], () => typing.TypingResult) => Any): ObjectWithMethodDef =
+    new OverriddenObjectWithMethodDef(original) {
+      override def invokeMethod(params: Map[String, Any], outputVariableNameOpt: Option[String], additional: Seq[AnyRef]): Any =
+        method(params, outputVariableNameOpt, additional, () => {
+          //this is needed to be able to handle dynamic types in tests
+          original.invokeMethod(params, outputVariableNameOpt, additional).cast[ReturningType].map(_.returnType).getOrElse(original.returnType)
         })
     }
 

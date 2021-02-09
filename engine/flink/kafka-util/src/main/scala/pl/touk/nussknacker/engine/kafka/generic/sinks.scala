@@ -1,30 +1,24 @@
 package pl.touk.nussknacker.engine.kafka.generic
 
-import java.nio.charset.StandardCharsets
 import java.util.UUID
 
-import org.apache.flink.streaming.util.serialization.KeyedSerializationSchema
-import pl.touk.nussknacker.engine.api.typed.TypedMap
-import pl.touk.nussknacker.engine.kafka.{KafkaConfig, KafkaSinkFactory}
+import pl.touk.nussknacker.engine.api.process.ProcessObjectDependencies
+import pl.touk.nussknacker.engine.kafka.serialization.schemas.SimpleSerializationSchema
+import pl.touk.nussknacker.engine.kafka.sink.KafkaSinkFactory
 import pl.touk.nussknacker.engine.util.json.BestEffortJsonEncoder
 
+//TODO: Move it to sink package
 object sinks {
 
-  class GenericKafkaJsonSink(kafkaConfig: KafkaConfig) extends KafkaSinkFactory(kafkaConfig, GenericJsonSerialization)
+  private val encoder = BestEffortJsonEncoder(failOnUnkown = false)
 
-  object GenericJsonSerialization extends KeyedSerializationSchema[Any] {
-    val encoder = BestEffortJsonEncoder(failOnUnkown = false)
-    override def serializeKey(element: Any): Array[Byte] = UUID.randomUUID().toString.getBytes(StandardCharsets.UTF_8)
-    override def serializeValue(element: Any): Array[Byte] = {
-      val objToEncode = element match {
-        // TODO: would be safer if will be added expected type in Sink and during expression evaluation,
-        // would be performed conversion to it
-        case TypedMap(fields) => fields
-        case other => other
-      }
-      encoder.encode(objToEncode).spaces2.getBytes(StandardCharsets.UTF_8)
-    }
-    override def getTargetTopic(element: Any): String = null
-  }
+  class GenericKafkaJsonSink(processObjectDependencies: ProcessObjectDependencies)
+    extends KafkaSinkFactory(GenericJsonSerialization, processObjectDependencies)
 
+  case class GenericJsonSerialization(topic: String) extends SimpleSerializationSchema[Any](topic, element => {
+    // TODO: would be safer if will be added expected type in Sink and during expression evaluation,
+    //       would be performed conversion to it
+    encoder.encode(element).spaces2
+    //UUID is *not* performant enough when volume is high...
+  }, _ => UUID.randomUUID().toString)
 }

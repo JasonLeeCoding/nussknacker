@@ -1,7 +1,6 @@
 package pl.touk.nussknacker.ui.process.migrate
 
 import io.circe.generic.JsonCodec
-import pl.touk.nussknacker.engine.ProcessingTypeData.ProcessingType
 import pl.touk.nussknacker.engine.migration.ProcessMigrations
 import pl.touk.nussknacker.restmodel.displayedgraph.{DisplayableProcess, ValidatedDisplayableProcess}
 import pl.touk.nussknacker.ui.process.marshall.ProcessConverter
@@ -9,8 +8,9 @@ import pl.touk.nussknacker.restmodel.processdetails.ValidatedProcessDetails
 import pl.touk.nussknacker.ui.process.subprocess.{SubprocessDetails, SubprocessRepository, SubprocessResolver}
 import pl.touk.nussknacker.ui.validation.ProcessValidation
 import pl.touk.nussknacker.restmodel.validation.ValidationResults.{NodeValidationError, ValidationErrors, ValidationResult, ValidationWarnings}
+import pl.touk.nussknacker.ui.process.processingtypedata.ProcessingTypeDataProvider
 
-class TestModelMigrations(migrations: Map[ProcessingType, ProcessMigrations], processValidation: ProcessValidation) {
+class TestModelMigrations(migrations: ProcessingTypeDataProvider[ProcessMigrations], processValidation: ProcessValidation) {
 
   def testMigrations(processes: List[ValidatedProcessDetails], subprocesses: List[ValidatedProcessDetails]) : List[TestMigrationResult] = {
     val migratedSubprocesses = subprocesses.flatMap(migrateProcess)
@@ -60,7 +60,7 @@ class TestModelMigrations(migrations: Map[ProcessingType, ProcessMigrations], pr
         after.errors.processPropertiesErrors.diff(before.errors.processPropertiesErrors),
         after.errors.globalErrors.diff(before.errors.globalErrors)
       ),
-      ValidationWarnings(diffOnMap(before.warnings.invalidNodes, after.warnings.invalidNodes)), Map.empty, Map.empty
+      ValidationWarnings(diffOnMap(before.warnings.invalidNodes, after.warnings.invalidNodes)), Map.empty
     )
   }
 

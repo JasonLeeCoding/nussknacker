@@ -1,8 +1,7 @@
 package pl.touk.nussknacker.engine.management.sample
 
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
-import com.typesafe.config.Config
 import com.typesafe.scalalogging.LazyLogging
 import io.circe.generic.JsonCodec
 import pl.touk.nussknacker.engine.api.exception.{EspExceptionHandler, EspExceptionInfo, ExceptionHandlerFactory}
@@ -10,7 +9,7 @@ import pl.touk.nussknacker.engine.api.process._
 import pl.touk.nussknacker.engine.api.signal.ProcessSignalSender
 import pl.touk.nussknacker.engine.api.test.InvocationCollectors.ServiceInvocationCollector
 import pl.touk.nussknacker.engine.api.test.{NewLineSplittedTestDataParser, TestDataParser}
-import pl.touk.nussknacker.engine.api.{CirceUtil, CustomStreamTransformer, MethodToInvoke, ProcessListener, Service}
+import pl.touk.nussknacker.engine.api._
 import pl.touk.nussknacker.engine.standalone.api.{StandaloneGetSource, StandalonePostSource, StandaloneSourceFactory}
 import pl.touk.nussknacker.engine.standalone.utils.service.TimeMeasuringService
 import pl.touk.nussknacker.engine.util.LoggingListener
@@ -22,32 +21,32 @@ class StandaloneProcessConfigCreator extends ProcessConfigCreator with LazyLoggi
 
   val standaloneCategory = "ServerRestApi"
 
-  override def customStreamTransformers(config: Config): Map[String, WithCategories[CustomStreamTransformer]] = Map.empty
+  override def customStreamTransformers(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[CustomStreamTransformer]] = Map.empty
 
-  override def services(config: Config): Map[String, WithCategories[Service]] = Map(
+  override def services(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[Service]] = Map(
     "enricherService" -> WithCategories(new EnricherService, standaloneCategory),
     "timeMeasuringEnricherService" -> WithCategories(new TimeMeasuringEnricherService, standaloneCategory),
     "slowEnricherService" -> WithCategories(new SlowEnricherService, standaloneCategory),
     "processorService" -> WithCategories(new ProcessorService, standaloneCategory)
   )
 
-  override def sourceFactories(config: Config): Map[String, WithCategories[SourceFactory[_]]] = Map(
+  override def sourceFactories(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[SourceFactory[_]]] = Map(
     "request1-source" -> WithCategories(new Request1SourceFactory, standaloneCategory)
   )
 
-  override def sinkFactories(config: Config): Map[String, WithCategories[SinkFactory]] = Map(
+  override def sinkFactories(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[SinkFactory]] = Map(
     "response-sink" -> WithCategories(new ResponseSink, standaloneCategory)
   )
 
-  override def listeners(config: Config): Seq[ProcessListener] = List(LoggingListener)
+  override def listeners(processObjectDependencies: ProcessObjectDependencies): Seq[ProcessListener] = List(LoggingListener)
 
-  override def exceptionHandlerFactory(config: Config): ExceptionHandlerFactory = ExceptionHandlerFactory.noParams(md => new EspExceptionHandler {
+  override def exceptionHandlerFactory(processObjectDependencies: ProcessObjectDependencies): ExceptionHandlerFactory = ExceptionHandlerFactory.noParams(md => new EspExceptionHandler {
     override def handle(exceptionInfo: EspExceptionInfo[_ <: Throwable]): Unit = logger.error("Error", exceptionInfo)
   })
 
-  override def expressionConfig(config: Config) = ExpressionConfig(Map.empty, List.empty)
+  override def expressionConfig(processObjectDependencies: ProcessObjectDependencies) = ExpressionConfig(Map.empty, List.empty)
 
-  override def signals(config: Config): Map[String, WithCategories[ProcessSignalSender]] = Map.empty
+  override def signals(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[ProcessSignalSender]] = Map.empty
 
   override def buildInfo(): Map[String, String] = Map.empty
 }
@@ -98,12 +97,23 @@ object ProcessorService {
   def clear() = invocationsCount.set(0)
 }
 
-class ProcessorService extends Service {
+class ProcessorService extends Service with Lifecycle {
+
+  private val initialized = new AtomicBoolean(false)
+
+  override def open(jobData: JobData): Unit = {
+    initialized.set(true)
+  }
+
   @MethodToInvoke
   def invoke()(implicit ex: ExecutionContext, collector: ServiceInvocationCollector): Future[Unit] = {
-    collector.collect("processor service invoked", Option(())) {
-      ProcessorService.invocationsCount.getAndIncrement()
-      Future.successful(())
+    if (!initialized.get()) {
+      Future.failed(new IllegalArgumentException("I was not initialized!"))
+    } else {
+      collector.collect("processor service invoked", Option(())) {
+        ProcessorService.invocationsCount.getAndIncrement()
+        Future.successful(())
+      }
     }
   }
 

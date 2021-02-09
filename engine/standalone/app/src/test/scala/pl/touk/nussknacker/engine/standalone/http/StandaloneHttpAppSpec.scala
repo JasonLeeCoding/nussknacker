@@ -9,15 +9,16 @@ import akka.http.scaladsl.model._
 import akka.http.scaladsl.server.MethodRejection
 import akka.http.scaladsl.testkit.ScalatestRouteTest
 import akka.http.scaladsl.unmarshalling.{FromEntityUnmarshaller, Unmarshaller}
-import com.codahale.metrics.MetricRegistry
 import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigValueFactory.{fromAnyRef, fromIterable}
 import de.heikoseeberger.akkahttpcirce.FailFastCirceSupport
-import io.circe.Encoder
+import io.circe.{Encoder, _}
+import io.circe.parser._
 import io.circe.syntax._
+import io.dropwizard.metrics5.MetricRegistry
 import org.scalatest.{BeforeAndAfterEach, FlatSpec, Matchers}
 import pl.touk.nussknacker.engine.api.ProcessVersion
-import pl.touk.nussknacker.engine.api.deployment.{DeploymentId, ProcessState}
+import pl.touk.nussknacker.engine.api.deployment.simple.SimpleStateStatus
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.engine.build.StandaloneProcessBuilder
 import pl.touk.nussknacker.engine.canonize.ProcessCanonizer
@@ -76,6 +77,14 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
     .filter("filter1", "#input.field1() == 'a'")
     .sink("endNodeIID", "#input.field2", "response-sink"))
 
+  def processWithLifecycleService = processToJson(StandaloneProcessBuilder
+    .id(procId)
+      .path(Some("customPath1"))
+    .exceptionHandler()
+    .source("start", "request1-post-source")
+    .processor("service", "lifecycleService")
+    .sink("endNodeIID", "#input.field2", "response-sink"))
+
   def noFilterProcessJson = processToJson(StandaloneProcessBuilder
     .id(procId)
     .exceptionHandler()
@@ -116,19 +125,26 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
   val managementRoute = exampleApp.managementRoute.route
   val processesRoute = exampleApp.processRoute.route(StandaloneRequestResponseLogger.default)
 
-  
   it should "deploy process and then run it" in {
     assertProcessNotRunning(procId)
     Post("/deploy", toEntity(deploymentData(processJson))) ~> managementRoute ~> check {
       status shouldBe StatusCodes.OK
       Get(s"/checkStatus/${procId.value}") ~> managementRoute ~> check {
         status shouldBe StatusCodes.OK
-        val processState = responseAs[ProcessState]
-        processState.id shouldBe DeploymentId(procId.value)
-        processState.startTime shouldBe testEpoch
 
-        processState.status shouldBe "RUNNING"
+        val docs = parse(responseAs[String]) match {
+          case Right(json) => json
+          case Left(error) => throw new AssertionError(error)
+        }
+
+        val cursorState = docs.hcursor
+
+        cursorState.downField("deploymentId").focus shouldBe Some(Json.fromString(procId.value))
+        cursorState.downField("startTime").focus shouldBe Some(Json.fromBigDecimal(testEpoch))
+        cursorState.downField("status").downField("type").focus shouldBe Some(Json.fromString(SimpleStateStatus.Running.getClass.getSimpleName))
+        cursorState.downField("status").downField("name").focus shouldBe Some(Json.fromString(SimpleStateStatus.Running.name))
       }
+
       Post(s"/${procId.value}", toEntity(Request("a", "b"))) ~> processesRoute ~> check {
         status shouldBe StatusCodes.OK
         responseAs[String] shouldBe "[\"b\"]"
@@ -146,10 +162,8 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
         responseAs[String] shouldBe "[\"b\"]"
         cancelProcess(procId)
       }
-
     }
   }
-
 
   it should "be able to invoke with GET for GET source" in {
     assertProcessNotRunning(procId)
@@ -174,7 +188,6 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
     }
   }
 
-
   it should "not be able to invoke with POST for GET source" in {
     assertProcessNotRunning(procId)
     Post("/deploy", toEntity(deploymentData(processJsonWithGet))) ~> managementRoute ~> check {
@@ -193,15 +206,26 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
     }
   }
 
-  it should "open and close services" in {
+  it should "open and close used services" in {
     assertProcessNotRunning(procId)
-    Post("/deploy", toEntity(deploymentData(processWithPathJson))) ~> managementRoute ~> check {
+    LifecycleService.reset()
+    Post("/deploy", toEntity(deploymentData(processWithLifecycleService))) ~> managementRoute ~> check {
       status shouldBe StatusCodes.OK
       LifecycleService.opened shouldBe true
       cancelProcess(procId)
       LifecycleService.closed shouldBe true
     }
+  }
 
+  it should "not open not used services" in {
+    assertProcessNotRunning(procId)
+    LifecycleService.reset()
+    Post("/deploy", toEntity(deploymentData(processWithPathJson))) ~> managementRoute ~> check {
+      status shouldBe StatusCodes.OK
+      LifecycleService.opened shouldBe false
+      cancelProcess(procId)
+      LifecycleService.closed shouldBe false
+    }
   }
 
   it should "run process that produces empty response" in {
@@ -222,7 +246,7 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
       status shouldBe StatusCodes.OK
       Post(s"/${procId.value}", toEntity(Request("", "d"))) ~> processesRoute ~> check {
         status shouldBe StatusCodes.InternalServerError
-        responseAs[String] shouldBe "[{\"nodeId\":\"filter1\",\"message\":\"/ by zero\"}]"
+        responseAs[String] shouldBe """[{"nodeId":"filter1","message":"Expression [1/#input.field1.length() > 0] evaluation failed, message: / by zero"}]"""
         cancelProcess(procId)
       }
     }
@@ -298,8 +322,4 @@ class StandaloneHttpAppSpec extends FlatSpec with Matchers with ScalatestRouteTe
     val json = jsonable.asJson.spaces2
     HttpEntity(ContentTypes.`application/json`, json)
   }
-
-
-
-
 }

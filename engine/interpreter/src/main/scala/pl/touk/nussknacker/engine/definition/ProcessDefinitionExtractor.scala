@@ -1,32 +1,41 @@
 package pl.touk.nussknacker.engine.definition
 
-import com.typesafe.config.{Config, ConfigRenderOptions}
-import pl.touk.nussknacker.engine.api.definition.ParameterRestriction
+import com.typesafe.config.Config
 import pl.touk.nussknacker.engine.api.dict.DictDefinition
-import pl.touk.nussknacker.engine.api.process.{LanguageConfiguration, ProcessConfigCreator, SingleNodeConfig, SinkFactory}
+import pl.touk.nussknacker.engine.api.process.{ProcessObjectDependencies, _}
 import pl.touk.nussknacker.engine.api.signal.SignalTransformer
 import pl.touk.nussknacker.engine.api.typed.typing.Typed
-import pl.touk.nussknacker.engine.api.{CirceUtil, CustomStreamTransformer, QueryableStateNames}
+import pl.touk.nussknacker.engine.api.{CustomStreamTransformer, QueryableStateNames}
 import pl.touk.nussknacker.engine.definition.DefinitionExtractor._
 import pl.touk.nussknacker.engine.definition.MethodDefinitionExtractor.{MethodDefinition, OrderedDependencies}
-import pl.touk.nussknacker.engine.definition.TypeInfos.ClazzDefinition
 import shapeless.syntax.typeable._
                  
 object ProcessDefinitionExtractor {
 
+  //we don't do it inside extractObjectWithMethods because this is needed only on FE, and can be a bit costly
+  def extractTypes(definition: ProcessDefinition[ObjectWithMethodDef]): Set[TypeInfos.ClazzDefinition] = {
+    TypesInformation.extract(definition.services.values ++
+      definition.sourceFactories.values ++
+      definition.customStreamTransformers.values.map(_._1) ++
+      definition.signalsWithTransformers.values.map(_._1) ++
+      definition.expressionConfig.globalVariables.values
+    )(definition.settings)
+  }
+
   import pl.touk.nussknacker.engine.util.Implicits._
   //TODO: move it to ProcessConfigCreator??
-  def extractObjectWithMethods(creator: ProcessConfigCreator, config: Config) : ProcessDefinition[ObjectWithMethodDef] = {
+  def extractObjectWithMethods(creator: ProcessConfigCreator,
+                               processObjectDependencies: ProcessObjectDependencies) : ProcessDefinition[ObjectWithMethodDef] = {
 
-    val services = creator.services(config)
-    val signals = creator.signals(config)
-    val sourceFactories = creator.sourceFactories(config)
-    val sinkFactories = creator.sinkFactories(config)
-    val exceptionHandlerFactory = creator.exceptionHandlerFactory(config)
-    val customStreamTransformers = creator.customStreamTransformers(config)
-    val expressionConfig = creator.expressionConfig(config)
+    val services = creator.services(processObjectDependencies)
+    val signals = creator.signals(processObjectDependencies)
+    val sourceFactories = creator.sourceFactories(processObjectDependencies)
+    val sinkFactories = creator.sinkFactories(processObjectDependencies)
+    val exceptionHandlerFactory = creator.exceptionHandlerFactory(processObjectDependencies)
+    val customStreamTransformers = creator.customStreamTransformers(processObjectDependencies)
+    val expressionConfig = creator.expressionConfig(processObjectDependencies)
 
-    val nodesConfig = extractNodesConfig(config)
+    val nodesConfig = extractNodesConfig(processObjectDependencies.config)
 
     val servicesDefs = ObjectWithMethodDef.forMap(services, ProcessObjectDefinitionExtractor.service, nodesConfig)
 
@@ -34,7 +43,7 @@ object ProcessDefinitionExtractor {
 
     val signalsDefs = ObjectWithMethodDef.forMap(signals, ProcessObjectDefinitionExtractor.signals, nodesConfig).map { case (signalName, signalSender) =>
       val transformers = customStreamTransformersDefs.filter { case (_, transformerDef) =>
-          transformerDef.methodDef.annotations.flatMap(_.cast[SignalTransformer]).exists(_.signalClass() == signalSender.obj.getClass)
+          transformerDef.annotations.flatMap(_.cast[SignalTransformer]).exists(_.signalClass() == signalSender.obj.getClass)
       }.keySet
       (signalName, (signalSender, transformers))
     }
@@ -46,21 +55,12 @@ object ProcessDefinitionExtractor {
 
     val exceptionHandlerFactoryDefs = ObjectWithMethodDef.withEmptyConfig(exceptionHandlerFactory, ProcessObjectDefinitionExtractor.exceptionHandler)
 
-    //TODO: this is not so nice...
-    val globalVariablesDefs = expressionConfig.globalProcessVariables.map { case (varName, globalVar) =>
-      val typed = Typed.fromInstance(globalVar.value)
-      (varName, ObjectWithMethodDef(globalVar.value, MethodDefinition(varName, (_, _) => globalVar, new OrderedDependencies(List()), typed,  typed, List()),
-        ObjectDefinition(List(), typed, globalVar.categories, SingleNodeConfig.zero)))
-    }
+    val globalVariablesDefs = GlobalVariableDefinitionExtractor.extractDefinitions(expressionConfig.globalProcessVariables)
 
     val globalImportsDefs = expressionConfig.globalImports.map(_.value)
 
-    val typesInformation = TypesInformation.extract(servicesDefs.values,
-      sourceFactoriesDefs.values,
-      customStreamTransformersDefs.values,
-      signalsDefs.values.map(_._1),
-      globalVariablesDefs.values.map(_.methodDef.returnType)
-    )(creator.classExtractionSettings(config))
+    val settings = creator.classExtractionSettings(processObjectDependencies)
+
 
     ProcessDefinition[ObjectWithMethodDef](
       servicesDefs, sourceFactoriesDefs,
@@ -71,19 +71,18 @@ object ProcessDefinitionExtractor {
         expressionConfig.languages,
         expressionConfig.optimizeCompilation,
         expressionConfig.strictTypeChecking,
-        expressionConfig.dictionaries.mapValuesNow(_.value)), typesInformation)
+        expressionConfig.dictionaries.mapValuesNow(_.value),
+        expressionConfig.hideMetaVariable,
+        expressionConfig.strictMethodsChecking
+      ), settings)
   }
 
   def extractNodesConfig(processConfig: Config) : Map[String, SingleNodeConfig] = {
 
+    import pl.touk.nussknacker.engine.util.config.FicusReaders._
     import net.ceedubs.ficus.Ficus._
     import net.ceedubs.ficus.readers.ArbitraryTypeReader._
-    import net.ceedubs.ficus.readers.ValueReader
 
-    implicit val nodeConfig: ValueReader[ParameterRestriction] = ValueReader.relative(config => {
-      val json = config.root().render(ConfigRenderOptions.concise().setJson(true))
-      CirceUtil.decodeJsonUnsafe[ParameterRestriction](json, "invalid process config")
-    })
     processConfig.getOrElse[Map[String, SingleNodeConfig]]("nodes", Map.empty)
   }
 
@@ -94,15 +93,15 @@ object ProcessDefinitionExtractor {
 
   private def extractCustomTransformerData(objectWithMethodDef: ObjectWithMethodDef) = {
     val transformer = objectWithMethodDef.obj.asInstanceOf[CustomStreamTransformer]
-    val queryNamesAnnotation = objectWithMethodDef.methodDef.annotations.flatMap(_.cast[QueryableStateNames])
+    val queryNamesAnnotation = objectWithMethodDef.annotations.flatMap(_.cast[QueryableStateNames])
     val queryNames = queryNamesAnnotation.flatMap(_.values().toList).toSet
-    CustomTransformerAdditionalData(queryNames, transformer.clearsContext, transformer.canHaveManyInputs)
+    CustomTransformerAdditionalData(queryNames, transformer.clearsContext, transformer.canHaveManyInputs, transformer.canBeEnding)
   }
 
   type TransformerId = String
   type QueryableStateName = String
 
-  case class CustomTransformerAdditionalData(queryableStateNames: Set[QueryableStateName], clearsContext: Boolean, manyInputs: Boolean)
+  case class CustomTransformerAdditionalData(queryableStateNames: Set[QueryableStateName], clearsContext: Boolean, manyInputs: Boolean, canBeEnding: Boolean)
 
   case class SinkAdditionalData(requiresOutput: Boolean)
 
@@ -114,7 +113,7 @@ object ProcessDefinitionExtractor {
                                                     signalsWithTransformers: Map[String, (T, Set[TransformerId])],
                                                     exceptionHandlerFactory: T,
                                                     expressionConfig: ExpressionDefinition[T],
-                                                    typesInformation: Set[ClazzDefinition]) {
+                                                    settings: ClassExtractionSettings) {
     def componentIds: List[String] = {
       val ids = services.keys ++
         sourceFactories.keys ++
@@ -132,7 +131,9 @@ object ProcessDefinitionExtractor {
       definition.expressionConfig.languages,
       definition.expressionConfig.optimizeCompilation,
       definition.expressionConfig.strictTypeChecking,
-      definition.expressionConfig.dictionaries
+      definition.expressionConfig.dictionaries,
+      definition.expressionConfig.hideMetaVariable,
+      definition.expressionConfig.strictMethodsChecking
     )
     ProcessDefinition(
       definition.services.mapValuesNow(_.objectDefinition),
@@ -142,11 +143,12 @@ object ProcessDefinitionExtractor {
       definition.signalsWithTransformers.mapValuesNow(sign => (sign._1.objectDefinition, sign._2)),
       definition.exceptionHandlerFactory.objectDefinition,
       expressionDefinition,
-      definition.typesInformation
+      definition.settings
     )
   }
 
   case class ExpressionDefinition[+T <: ObjectMetadata](globalVariables: Map[String, T], globalImports: List[String], languages: LanguageConfiguration,
-                                                        optimizeCompilation: Boolean, strictTypeChecking: Boolean, dictionaries: Map[String, DictDefinition])
+                                                        optimizeCompilation: Boolean, strictTypeChecking: Boolean, dictionaries: Map[String, DictDefinition],
+                                                        hideMetaVariable: Boolean, strictMethodsChecking: Boolean)
 
 }

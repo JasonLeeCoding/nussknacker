@@ -1,14 +1,15 @@
+import axios from "axios"
+import * as  queryString from "query-string"
 import React from "react"
-import {withRouter} from 'react-router-dom'
-import * as  queryString from 'query-string'
+import {withRouter} from "react-router-dom"
 import {Table, Td, Tr} from "reactable"
-import "../../stylesheets/processes.styl"
-import HttpService from "../../http/HttpService"
 import * as VisualizationUrl from "../../common/VisualizationUrl"
 import LoaderSpinner from "../../components/Spinner"
-import BaseAdminTab from "./BaseAdminTab"
-import axios from "axios"
 import SearchFilter from "../../components/table/SearchFilter"
+import {AWithFocus, SelectWithFocus} from "../../components/withFocus"
+import HttpService from "../../http/HttpService"
+import "../../stylesheets/processes.styl"
+import BaseAdminTab from "./BaseAdminTab"
 
 class SearchComponents extends BaseAdminTab {
   constructor(props) {
@@ -19,7 +20,7 @@ class SearchComponents extends BaseAdminTab {
     this.state = Object.assign({
       componentToFind: query.componentToFind,
       processesComponents: [],
-      componentIds: []
+      componentIds: [],
     }, this.prepareState(), {showLoader: false})
   }
 
@@ -33,7 +34,7 @@ class SearchComponents extends BaseAdminTab {
       this.setState({
         showLoader: false,
         componentIds: idsResponse.data,
-        processesComponents: _.get(componentsResponse, "data", [])
+        processesComponents: _.get(componentsResponse, "data", []),
       })
     }))
   }
@@ -46,7 +47,7 @@ class SearchComponents extends BaseAdminTab {
     HttpService.fetchProcessesComponents(componentToFind).then((response) => {
       this.setState({
         processesComponents: response.data,
-        showLoader: false
+        showLoader: false,
       })
     })
   }
@@ -54,25 +55,26 @@ class SearchComponents extends BaseAdminTab {
   render() {
     return (
       <div>
-        <select className="table-select" onChange={this.onComponentChange} value={this.state.componentToFind || 0}>
+        <SelectWithFocus className="table-select" onChange={this.onComponentChange} value={this.state.componentToFind || 0}>
           <option disabled key={0} value={0}>-- select an option --</option>
           {
             this.state.componentIds.map((componentId, index) => {
               return (<option key={index} value={componentId}>{componentId}</option>)
             })
           }
-        </select>
+        </SelectWithFocus>
 
         <SearchFilter
           value={this.state.search}
-          onChange={this.onSearchChange}/>
+          onChange={this.onSearchChange}
+        />
 
         <LoaderSpinner show={this.state.showLoader}/>
 
         <Table
           className="esp-table"
-          sortable={['processName', 'nodeId', 'processCategory']}
-          filterable={['processName', 'nodeId', 'processCategory']}
+          sortable={["processName", "nodeId", "processCategory"]}
+          filterable={["processName", "nodeId", "processCategory"]}
           noDataText="No matching records found."
           hideFilterInput
           hidden={this.state.showLoader || this.state.componentToFind == null}
@@ -97,9 +99,9 @@ class SearchComponents extends BaseAdminTab {
                 <Tr key={idx}>
                   <Td column="processName">{row.processName}</Td>
                   <Td column="nodeId">
-                    <a target="_blank" href={VisualizationUrl.visualizationUrl(row.processName, row.nodeId)}>
+                    <AWithFocus target="_blank" href={VisualizationUrl.visualizationUrl(row.processName, row.nodeId)}>
                       {row.nodeId}
-                    </a>
+                    </AWithFocus>
                   </Td>
                   <Td column="processCategory">{row.processCategory}</Td>
                   <Td column="isDeployed" className="centered-column">

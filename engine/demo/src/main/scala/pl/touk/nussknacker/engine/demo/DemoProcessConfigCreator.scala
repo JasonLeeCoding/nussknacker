@@ -1,40 +1,38 @@
 package pl.touk.nussknacker.engine.demo
 
-import java.nio.charset.StandardCharsets
-import java.util.UUID
+import java.time.Duration
 
 import com.typesafe.config.Config
-import net.ceedubs.ficus.Ficus._
-import net.ceedubs.ficus.readers.ArbitraryTypeReader._
+import io.circe.Json
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
-import org.apache.flink.streaming.api.functions.TimestampAssigner
-import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor
-import org.apache.flink.streaming.api.windowing.time.Time
-import org.apache.flink.streaming.util.serialization.KeyedSerializationSchema
+import org.apache.flink.streaming.connectors.kafka.KafkaSerializationSchema
+import pl.touk.nussknacker.engine.api.CirceUtil.decodeJsonUnsafe
 import pl.touk.nussknacker.engine.api._
 import pl.touk.nussknacker.engine.api.exception.{EspExceptionHandler, ExceptionHandlerFactory}
-import pl.touk.nussknacker.engine.api.process._
+import pl.touk.nussknacker.engine.api.process.{ProcessObjectDependencies, _}
 import pl.touk.nussknacker.engine.api.signal.ProcessSignalSender
 import pl.touk.nussknacker.engine.api.test.{TestDataSplit, TestParsingUtils}
 import pl.touk.nussknacker.engine.demo.custom.{EventsCounter, TransactionAmountAggregator}
 import pl.touk.nussknacker.engine.demo.service.{AlertService, ClientService}
-import pl.touk.nussknacker.engine.flink.util.exception.BrieflyLoggingRestartingExceptionHandler
+import pl.touk.nussknacker.engine.flink.api.timestampwatermark.{StandardTimestampWatermarkHandler, TimestampWatermarkHandler}
+import pl.touk.nussknacker.engine.flink.util.exception.BrieflyLoggingExceptionHandler
 import pl.touk.nussknacker.engine.flink.util.source.EspDeserializationSchema
 import pl.touk.nussknacker.engine.flink.util.transformer.{TransformStateTransformer, UnionTransformer}
-import pl.touk.nussknacker.engine.kafka.{KafkaConfig, KafkaSinkFactory, KafkaSourceFactory}
+import pl.touk.nussknacker.engine.kafka.serialization.schemas.SimpleSerializationSchema
+import pl.touk.nussknacker.engine.kafka.sink.KafkaSinkFactory
+import pl.touk.nussknacker.engine.kafka.source.KafkaSourceFactory
 import pl.touk.nussknacker.engine.util.LoggingListener
-import CirceUtil.decodeJsonUnsafe
-import io.circe.Json
-import pl.touk.nussknacker.engine.util.json.BestEffortJsonEncoder
+
+import scala.reflect.ClassTag
 
 class DemoProcessConfigCreator extends ProcessConfigCreator {
 
-  def marketing[T](value: T) = WithCategories(value, "Recommendations")
-  def fraud[T](value: T) = WithCategories(value, "FraudDetection")
-  def all[T](value: T) = WithCategories(value, "Recommendations", "FraudDetection")
+  def marketing[T](value: T): WithCategories[T] = WithCategories(value, "Recommendations")
+  def fraud[T](value: T): WithCategories[T] = WithCategories(value, "FraudDetection")
+  def all[T](value: T): WithCategories[T] = WithCategories(value, "Recommendations", "FraudDetection")
 
-  override def customStreamTransformers(config: Config): Map[String, WithCategories[CustomStreamTransformer]] = {
+  override def customStreamTransformers(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[CustomStreamTransformer]] = {
     Map(
       "transactionAmountAggregator" -> all(new TransactionAmountAggregator),
       "eventsCounter" -> all(new EventsCounter),
@@ -43,73 +41,63 @@ class DemoProcessConfigCreator extends ProcessConfigCreator {
     )
   }
 
-  override def services(config: Config): Map[String, WithCategories[Service]] = {
+  override def services(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[Service]] = {
     Map(
       "clientService" -> all(new ClientService),
       "alertService" -> all(new AlertService("/tmp/alerts"))
     )
   }
 
-  override def sourceFactories(config: Config): Map[String, WithCategories[SourceFactory[_]]] = {
-    val kafkaConfig = config.as[KafkaConfig]("kafka")
-    val transactionSource = createTransactionSource(kafkaConfig)
-    val clientSource = createClientSource(kafkaConfig)
+  override def sourceFactories(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[SourceFactory[_]]] = {
+    val transactionSource = createTransactionSource(processObjectDependencies)
+    val clientSource = createClientSource(processObjectDependencies)
     Map(
       "kafka-transaction" -> all(transactionSource),
       "kafka-client" -> all(clientSource)
     )
   }
 
-  private def createTransactionSource(kafkaConfig: KafkaConfig) = {
-    val transactionTimestampExtractor = new BoundedOutOfOrdernessTimestampExtractor[Transaction](Time.minutes(10)) {
-      override def extractTimestamp(element: Transaction): Long = element.eventDate
-    }
-    kafkaSource[Transaction](kafkaConfig, decodeJsonUnsafe[Transaction](_), Some(transactionTimestampExtractor), TestParsingUtils.newLineSplit)
+  private def createTransactionSource(processObjectDependencies: ProcessObjectDependencies) = {
+    val transactionTimestampExtractor = StandardTimestampWatermarkHandler.boundedOutOfOrderness[Transaction](_.eventDate, Duration.ofMinutes(10))
+    kafkaSource[Transaction](decodeJsonUnsafe[Transaction](_), Some(transactionTimestampExtractor),
+      TestParsingUtils.newLineSplit, processObjectDependencies)
   }
 
-  private def createClientSource(kafkaConfig: KafkaConfig) = {
-    kafkaSource[Client](kafkaConfig, decodeJsonUnsafe[Client](_), None, TestParsingUtils.newLineSplit)
+  private def createClientSource(processObjectDependencies: ProcessObjectDependencies) = {
+    kafkaSource[Client](decodeJsonUnsafe[Client](_), None, TestParsingUtils.newLineSplit, processObjectDependencies)
   }
 
-  private def kafkaSource[T: TypeInformation](config: KafkaConfig,
-                                              decode: Array[Byte] => T,
-                                              timestampAssigner: Option[TimestampAssigner[T]],
-                                              testPrepareInfo: TestDataSplit): SourceFactory[T] = {
+  private def kafkaSource[T: TypeInformation](decode: Array[Byte] => T,
+                                              timestampAssigner: Option[TimestampWatermarkHandler[T]],
+                                              testPrepareInfo: TestDataSplit,
+                                              processObjectDependencies: ProcessObjectDependencies): SourceFactory[T] = {
     val schema = new EspDeserializationSchema[T](bytes => decode(bytes))
-    new KafkaSourceFactory[T](config, schema, timestampAssigner , testPrepareInfo)
+    new KafkaSourceFactory[T](schema, timestampAssigner , testPrepareInfo, processObjectDependencies)(ClassTag(implicitly[TypeInformation[T]].getTypeClass))
   }
 
-  override def sinkFactories(config: Config): Map[String, WithCategories[SinkFactory]] = {
-    val kafkaConfig = config.as[KafkaConfig]("kafka")
-    val encoder = BestEffortJsonEncoder(failOnUnkown = false)
-    val stringOrJsonSink = kafkaSink(kafkaConfig, new KeyedSerializationSchema[Any] {
-      override def serializeKey(element: Any): Array[Byte] = UUID.randomUUID().toString.getBytes(StandardCharsets.UTF_8)
-      override def serializeValue(element: Any): Array[Byte] = element match {
-        case a:DisplayJson => a.asJson.noSpaces.getBytes(StandardCharsets.UTF_8)
-        case a:Json => a.noSpaces.getBytes(StandardCharsets.UTF_8)
-        case a:String => a.getBytes(StandardCharsets.UTF_8)
-        case _ => throw new RuntimeException("Sorry, only strings or json are supported...")
-      }
-      override def getTargetTopic(element: Any): String = null
-    })
-    Map(
-      "kafka-stringSink" -> all(stringOrJsonSink)
-    )
+  override def sinkFactories(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[SinkFactory]] = {
+    val stringOrJsonSink = kafkaSink(new SimpleSerializationSchema[Any](_, {
+      case a: DisplayJson => a.asJson.noSpaces
+      case a: Json => a.noSpaces
+      case a: String => a
+      case _ => throw new RuntimeException("Sorry, only strings or json are supported...")
+    }), processObjectDependencies)
+    Map("kafka-stringSink" -> all(stringOrJsonSink))
   }
 
-  private def kafkaSink(kafkaConfig: KafkaConfig, serializationSchema: KeyedSerializationSchema[Any]) : SinkFactory = {
-    new KafkaSinkFactory(kafkaConfig, serializationSchema)
+  private def kafkaSink(serializationSchema: String => KafkaSerializationSchema[Any],
+                        processObjectDependencies: ProcessObjectDependencies) : SinkFactory = {
+    new KafkaSinkFactory(serializationSchema, processObjectDependencies)
   }
 
-  override def listeners(config: Config): Seq[ProcessListener] = {
+  override def listeners(processObjectDependencies: ProcessObjectDependencies): Seq[ProcessListener] = {
     Seq(LoggingListener)
   }
 
-  override def exceptionHandlerFactory(config: Config): ExceptionHandlerFactory = {
-    new LoggingExceptionHandlerFactory(config)
-  }
+  override def exceptionHandlerFactory(processObjectDependencies: ProcessObjectDependencies): ExceptionHandlerFactory =
+    new LoggingExceptionHandlerFactory(processObjectDependencies.config)
 
-  override def expressionConfig(config: Config): ExpressionConfig = {
+  override def expressionConfig(processObjectDependencies: ProcessObjectDependencies): ExpressionConfig = {
     val globalProcessVariables = Map(
       "UTIL" -> all(UtilProcessHelper),
       "TYPES" -> all(DataTypes)
@@ -124,7 +112,7 @@ class DemoProcessConfigCreator extends ProcessConfigCreator {
     )
   }
 
-  override def signals(config: Config): Map[String, WithCategories[ProcessSignalSender]] = {
+  override def signals(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[ProcessSignalSender]] = {
     Map.empty //TODO
   }
 }
@@ -132,8 +120,7 @@ class DemoProcessConfigCreator extends ProcessConfigCreator {
 class LoggingExceptionHandlerFactory(config: Config) extends ExceptionHandlerFactory {
 
   @MethodToInvoke
-  def create(metaData: MetaData, @ParamName("sampleParam") sampleParam: String): EspExceptionHandler = {
-    BrieflyLoggingRestartingExceptionHandler(metaData, config, params = Map("sampleParam" -> sampleParam))
-  }
+  def create(metaData: MetaData): EspExceptionHandler =
+    BrieflyLoggingExceptionHandler(metaData)
 
 }

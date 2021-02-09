@@ -7,6 +7,7 @@ import CirceUtil._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.JsonCodec
 import io.circe.generic.semiauto._
+import pl.touk.nussknacker.engine.api.async.DefaultAsyncInterpretationValue
 
 import scala.concurrent.duration.Duration
 
@@ -27,7 +28,9 @@ object ProcessAdditionalFields {
   implicit val circeEncoder: Encoder[ProcessAdditionalFields] = deriveEncoder
 }
 
-@JsonCodec case class Group(id: String, nodes: Set[String])
+@JsonCodec case class Group(id: String, nodes: Set[String], expanded: Option[Boolean], layoutData: Option[LayoutData])
+
+@JsonCodec case class LayoutData(x: Long, y: Long)
 
 // todo: MetaData should hold ProcessName as id
 @ConfiguredJsonCodec case class MetaData(id: String,
@@ -36,20 +39,17 @@ object ProcessAdditionalFields {
                     additionalFields: Option[ProcessAdditionalFields] = None,
                     subprocessVersions: Map[String, Long] = Map.empty)
 
-@ConfiguredJsonCodec sealed trait TypeSpecificData {
-  def allowLazyVars : Boolean
-}
+@ConfiguredJsonCodec sealed trait TypeSpecificData
 
 case class StreamMetaData(parallelism: Option[Int] = None,
-                          splitStateToDisk: Option[Boolean] = None,
+                          //we assume it's safer to split state to disk and fix performance than to fix heap problems...
+                          splitStateToDisk: Option[Boolean] = Some(true),
                           useAsyncInterpretation: Option[Boolean] = None,
                           checkpointIntervalInSeconds: Option[Long] = None) extends TypeSpecificData {
   
   def checkpointIntervalDuration  : Option[Duration]= checkpointIntervalInSeconds.map(Duration.apply(_, TimeUnit.SECONDS))
 
-  val shouldUseAsyncInterpretation : Boolean = useAsyncInterpretation.getOrElse(false)
-
-  override val allowLazyVars: Boolean = !shouldUseAsyncInterpretation
+  def shouldUseAsyncInterpretation(implicit defaultValue: DefaultAsyncInterpretationValue) : Boolean = useAsyncInterpretation.getOrElse(defaultValue.value)
 
 }
 
@@ -63,10 +63,4 @@ object StreamMetaData {
   }
 }
 
-case class BatchMetaData(parallelism: Option[Int] = None) extends TypeSpecificData {
-  override val allowLazyVars: Boolean = true
-}
-
-case class StandaloneMetaData(path: Option[String]) extends TypeSpecificData {
-  override val allowLazyVars: Boolean = true
-}
+case class StandaloneMetaData(path: Option[String]) extends TypeSpecificData

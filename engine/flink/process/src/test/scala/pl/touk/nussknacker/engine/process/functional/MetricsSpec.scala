@@ -2,29 +2,26 @@ package pl.touk.nussknacker.engine.process.functional
 
 import java.util.Date
 
-import org.apache.flink.shaded.testutils.org.jboss.netty.handler.codec.socks.SocksMessage.ProtocolVersion
-import org.scalatest.concurrent.Eventually
-import org.scalatest.time.{Millis, Seconds, Span}
-import org.scalatest.{BeforeAndAfterEach, FlatSpec, Matchers}
-import pl.touk.nussknacker.engine.api.ProcessVersion
+import org.apache.flink.configuration.Configuration
+import org.scalatest.{BeforeAndAfterEach, FunSuite, Matchers}
 import pl.touk.nussknacker.engine.build.{EspProcessBuilder, GraphBuilder}
-import pl.touk.nussknacker.engine.graph.EspProcess
-import pl.touk.nussknacker.engine.process.ProcessTestHelpers.{MockService, SimpleRecord, SinkForStrings, processInvoker}
+import pl.touk.nussknacker.engine.process.helpers.ProcessTestHelpers
+import pl.touk.nussknacker.engine.process.helpers.SampleNodes.{MockService, SimpleRecord, SinkForStrings}
 import pl.touk.nussknacker.engine.spel
+import pl.touk.nussknacker.test.VeryPatientScalaFutures
 
-
-class MetricsSpec extends FlatSpec with Matchers with Eventually with BeforeAndAfterEach {
+class MetricsSpec extends FunSuite with Matchers with VeryPatientScalaFutures with ProcessTestHelpers with BeforeAndAfterEach {
 
   override protected def beforeEach(): Unit = {
-    TestReporter.reset()
+    TestReporter.reset(this.getClass.getName)
   }
 
-  override implicit val patienceConfig = PatienceConfig(
-    timeout = Span(10, Seconds),
-    interval = Span(100, Millis)
-  )
+  override protected def afterAll(): Unit = {
+    super.afterAll()
+    TestReporter.remove(this.getClass.getName)
+  }
 
-  it should "measure time for service" in {
+  test("measure time for service") {
 
     import spel.Implicits._
 
@@ -37,15 +34,15 @@ class MetricsSpec extends FlatSpec with Matchers with Eventually with BeforeAndA
       SimpleRecord("1", 12, "a", new Date(0))
     )
 
-    invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data shouldNot be('empty)
-    val histogram = TestReporter.taskManagerReporter.testHistogram("serviceTimes.mockService.OK")
+    val histogram = TestReporter.get(this.getClass.getName).testHistogram("service.OK.serviceName.mockService.histogram")
     histogram.getCount shouldBe 1
 
   }
 
-  it should "measure errors" in {
+  test("measure errors") {
 
     import spel.Implicits._
 
@@ -57,19 +54,24 @@ class MetricsSpec extends FlatSpec with Matchers with Eventually with BeforeAndA
     val data = List(
       SimpleRecord("1", 0, "a", new Date(0))
     )
-    invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     eventually {
-      val totalGauges = TestReporter.taskManagerReporter.testGauges("error.instantRate")
+      val reporter = TestReporter.get(this.getClass.getName)
+
+      val totalGauges = reporter.testGauges("error.instantRate.instantRate")
       totalGauges.exists(_.getValue.asInstanceOf[Double] > 0) shouldBe true
 
-      val nodeGauges = TestReporter.taskManagerReporter.testGauges("error.proc2.instantRateByNode")
+      val nodeGauges = reporter.testGauges("error.instantRateByNode.nodeId.proc2.instantRate")
       nodeGauges.exists(_.getValue.asInstanceOf[Double] > 0) shouldBe true
+
+      val nodeCounts = reporter.testCounters("error.instantRateByNode.nodeId.proc2")
+      nodeCounts.exists(_.getCount > 0) shouldBe true
     }
 
   }
 
-  it should "measure node counts" in {
+  test("measure node counts") {
 
     import spel.Implicits._
 
@@ -90,22 +92,22 @@ class MetricsSpec extends FlatSpec with Matchers with Eventually with BeforeAndA
       SimpleRecord("1", 10, "a", new Date(0))
     )
 
-    invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     def counter(name: String) =
-      TestReporter.taskManagerReporter.testCounters(name).map(_.getCount).find(_ > 0).getOrElse(0)
+      TestReporter.get(this.getClass.getName).testCounters(name).map(_.getCount).find(_ > 0).getOrElse(0)
 
     eventually {
-      counter("nodeCount.source1") shouldBe 2L
-      counter("nodeCount.filter1") shouldBe 2L
-      counter("nodeCount.split1") shouldBe 1L
-      counter("nodeCount.proc2") shouldBe 1L
-      counter("nodeCount.out") shouldBe 1L
-      counter("nodeCount.out2") shouldBe 1L
+      counter("nodeId.source1.nodeCount") shouldBe 2L
+      counter("nodeId.filter1.nodeCount") shouldBe 2L
+      counter("nodeId.split1.nodeCount") shouldBe 1L
+      counter("nodeId.proc2.nodeCount") shouldBe 1L
+      counter("nodeId.out.nodeCount") shouldBe 1L
+      counter("nodeId.out2.nodeCount") shouldBe 1L
     }
   }
 
-  it should "open measuring service" in {
+  test("open measuring service"){
     import spel.Implicits._
 
     val process = EspProcessBuilder.id("proc1")
@@ -118,13 +120,14 @@ class MetricsSpec extends FlatSpec with Matchers with Eventually with BeforeAndA
       SimpleRecord("1", 12, "a", new Date(0))
     )
 
-    invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
     eventually {
       SinkForStrings.data shouldBe List("initialized!")
     }
   }
 
-  private def invoke(process: EspProcess, data: List[SimpleRecord]) = {
-    processInvoker.invoke(process, data, ProcessVersion.empty, 1, TestReporterUtil.configWithTestMetrics())
+  override protected def prepareFlinkConfiguration(): Configuration = {
+    TestReporterUtil.configWithTestMetrics(new Configuration(), this.getClass.getName)
   }
+
 }

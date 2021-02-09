@@ -17,7 +17,7 @@ import de.heikoseeberger.akkahttpcirce.FailFastCirceSupport
 import io.circe.Decoder
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.restmodel.displayedgraph.DisplayableProcess
-import pl.touk.nussknacker.restmodel.processdetails.{BasicProcess, ProcessDetails, ProcessHistoryEntry, ValidatedProcessDetails}
+import pl.touk.nussknacker.restmodel.processdetails.{BasicProcess, ProcessDetails, ProcessVersion, ValidatedProcessDetails}
 import pl.touk.nussknacker.restmodel.validation.ValidationResults.{ValidationErrors, ValidationResult}
 import pl.touk.nussknacker.ui.EspError
 import pl.touk.nussknacker.ui.EspError.XError
@@ -36,11 +36,11 @@ trait RemoteEnvironment {
   def compare(localProcess: DisplayableProcess, remoteProcessVersion: Option[Long],
               businessView: Boolean = false)(implicit ec: ExecutionContext) : Future[Either[EspError, Map[String, Difference]]]
 
-  def processVersions(processName: ProcessName)(implicit ec: ExecutionContext) : Future[List[ProcessHistoryEntry]]
+  def processVersions(processName: ProcessName)(implicit ec: ExecutionContext) : Future[List[ProcessVersion]]
 
   def migrate(localProcess: DisplayableProcess, category: String)(implicit ec: ExecutionContext, loggedUser: LoggedUser) : Future[Either[EspError, Unit]]
 
-  def testMigration(implicit ec: ExecutionContext) : Future[Either[EspError, List[TestMigrationResult]]]
+  def testMigration(processToInclude: BasicProcess => Boolean = _ => true)(implicit ec: ExecutionContext) : Future[Either[EspError, List[TestMigrationResult]]]
 }
 
 case class RemoteEnvironmentCommunicationError(statusCode: StatusCode, getMessage: String) extends EspError
@@ -87,7 +87,7 @@ trait StandardRemoteEnvironment extends FailFastCirceSupport with RemoteEnvironm
 
   implicit def materializer: Materializer
 
-  override def processVersions(processName: ProcessName)(implicit ec: ExecutionContext): Future[List[ProcessHistoryEntry]] =
+  override def processVersions(processName: ProcessName)(implicit ec: ExecutionContext): Future[List[ProcessVersion]] =
     invokeJson[ProcessDetails](HttpMethods.GET, List("processes", processName.value), Query(("businessView", true.toString))).map { result =>
       result.fold(_ => List(), _.history)
     }
@@ -113,7 +113,7 @@ trait StandardRemoteEnvironment extends FailFastCirceSupport with RemoteEnvironm
       validation <- EitherT(validateProcess(localProcess))
       _ <- EitherT.fromEither[Future](if (validation.errors != ValidationErrors.success) Left[EspError, Unit](MigrationValidationError(validation.errors)) else Right(()))
       _ <- createRemoteProcessIfNotExist(localProcess, category)
-      _ <- EitherT.right[EspError](saveProcess(localProcess, comment = s"Process migrated from $environmentId by ${loggedUser.id}"))
+      _ <- EitherT.right[EspError](saveProcess(localProcess, comment = s"Process migrated from $environmentId by ${loggedUser.username}"))
     } yield ()).value
   }
 
@@ -129,10 +129,10 @@ trait StandardRemoteEnvironment extends FailFastCirceSupport with RemoteEnvironm
     }
   }
 
-  override def testMigration(implicit ec: ExecutionContext): Future[Either[EspError, List[TestMigrationResult]]] = {
+  override def testMigration(processToInclude: BasicProcess => Boolean = _ => true)(implicit ec: ExecutionContext): Future[Either[EspError, List[TestMigrationResult]]] = {
     (for {
       basicProcesses <- EitherT(fetchProcesses)
-      processes      <- fetchGroupByGroup(basicProcesses)
+      processes      <- fetchGroupByGroup(basicProcesses.filter(processToInclude))
       subProcesses   <- EitherT(fetchSubProcessesDetails)
     } yield testModelMigrations.testMigrations(processes, subProcesses)).value
   }
@@ -157,11 +157,11 @@ trait StandardRemoteEnvironment extends FailFastCirceSupport with RemoteEnvironm
     invokeJson[ProcessDetails](HttpMethods.GET, List("processes", id) ++ remoteProcessVersion.map(_.toString).toList, Query(("businessView", businessView.toString)))
   }
 
-  private def fetchProcessesDetails(names: List[String])(implicit ec: ExecutionContext) = EitherT {
+  private def fetchProcessesDetails(names: List[ProcessName])(implicit ec: ExecutionContext) = EitherT {
     invokeJson[List[ValidatedProcessDetails]](
       HttpMethods.GET,
       "processesDetails" :: Nil,
-      Query(("names", names.map(URLEncoder.encode(_, StandardCharsets.UTF_8.displayName())).mkString(",")))
+      Query(("names", names.map(ns => URLEncoder.encode(ns.value, StandardCharsets.UTF_8.displayName())).mkString(",")))
     )
   }
 

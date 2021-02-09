@@ -11,7 +11,6 @@ import pl.touk.nussknacker.restmodel.processdetails.ProcessDetails
 import shapeless.syntax.typeable._
 
 object ProcessObjectsFinder {
-  import pl.touk.nussknacker.ui.util.CollectionsEnrichments._
   import pl.touk.nussknacker.engine.util.Implicits._
 
   def findSignals(processes: List[ProcessDetails],
@@ -32,7 +31,7 @@ object ProcessObjectsFinder {
     }.toMap
   }
 
-  //TODO return Map[ProcessingType, List[String]]?
+  //TODO return ProcessingTypeDataProvider[List[String]]?
   def findUnusedComponents(processes: List[ProcessDetails],
                            processDefinitions: List[ProcessDefinition[ObjectDefinition]]): List[String] = {
     val extracted = extractProcesses(processes.flatMap(_.json))
@@ -50,7 +49,7 @@ object ProcessObjectsFinder {
           processName = processDetails.name,
           nodeId = node.id,
           processCategory = processDetails.processCategory,
-          isDeployed = processDetails.currentlyDeployedAt.nonEmpty //TODO use the same logic that is used to display Status column on Procesess screen??
+          isDeployed = processDetails.isDeployed
         )
       }
       case None => Nil

@@ -3,21 +3,21 @@ package pl.touk.nussknacker.engine.demo
 import java.nio.charset.StandardCharsets
 import java.time.{LocalDateTime, ZoneId}
 
+import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.kafka.clients.producer.RecordMetadata
-import org.scalatest.concurrent.Eventually
-import org.scalatest.{BeforeAndAfterAll, FunSuite, Matchers, Outcome, fixture}
+import org.scalatest.{Matchers, Outcome, fixture}
 import pl.touk.nussknacker.engine.api.ProcessVersion
 import pl.touk.nussknacker.engine.build.EspProcessBuilder
 import pl.touk.nussknacker.engine.graph.EspProcess
-import pl.touk.nussknacker.engine.kafka.KafkaUtils
+import pl.touk.nussknacker.engine.kafka.KafkaZookeeperUtils
 import pl.touk.nussknacker.engine.spel
 
 import scala.concurrent.Future
 
 //TODO: do we currently need these tests?
-trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matchers with Eventually { self: BaseITest =>
+abstract class ExampleItTests extends fixture.FunSuite with Matchers with BaseITest {
 
-  import KafkaUtils._
+  import KafkaZookeeperUtils._
   import spel.Implicits._
 
   override type FixtureParam = String
@@ -35,7 +35,7 @@ trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matche
     val process = EspProcessBuilder
       .id("example1")
       .parallelism(1)
-      .exceptionHandler("sampleParam" -> "'sampleParamValue'")
+      .exceptionHandler()
       .source("start", "kafka-transaction", "topic" -> s"'$in'")
       .filter("amountFilter", "#input.amount > 1")
       .sink("end", "#UTIL.mapToJson({'clientId': #input.clientId, 'amount': #input.amount})",
@@ -62,7 +62,7 @@ trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matche
     val process = EspProcessBuilder
       .id("example2")
       .parallelism(1)
-      .exceptionHandler("sampleParam" -> "'sampleParamValue'")
+      .exceptionHandler()
       .source("start", "kafka-transaction", "topic" -> s"'$in'")
       .enricher("clientEnricher", "client", "clientService", "clientId" -> "#input.clientId")
       .sink("end",
@@ -95,7 +95,7 @@ trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matche
     val process =EspProcessBuilder
         .id("example3")
         .parallelism(1)
-        .exceptionHandler("sampleParam" -> "'sampleParamValue'")
+        .exceptionHandler()
         .source("start", "kafka-transaction", "topic" -> s"'$in'")
         .customNode("aggregate", "aggregatedAmount", "transactionAmountAggregator", "clientId" -> "#input.clientId")
         .filter("aggregateFilter", "#aggregatedAmount.amount > 10")
@@ -127,7 +127,7 @@ trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matche
     val process = EspProcessBuilder
       .id("example4")
       .parallelism(1)
-      .exceptionHandler("sampleParam" -> "'sampleParamValue'")
+      .exceptionHandler()
       .source("start", "kafka-transaction", "topic" -> s"'$in'")
       .customNode("transactionCounter", "transactionCounts", "eventsCounter", "key" -> "#input.clientId", "length" -> "'1h'")
       .filter("aggregateFilter", "#transactionCounts.count > 1")
@@ -161,9 +161,10 @@ trait ExampleItTests extends fixture.FunSuite with BeforeAndAfterAll with Matche
     }
   }
 
-  def register(process: EspProcess)(action: => Unit):Unit= {
-    registrar.register(env, process, ProcessVersion.empty)
-    stoppableEnv.withJobRunning(process.id)(action)
+  def register(process: EspProcess)(action: => Unit): Unit = {
+    val env = flinkMiniCluster.createExecutionEnvironment()
+    registrar.register(new StreamExecutionEnvironment(env), process, ProcessVersion.empty)
+    env.withJobRunning(process.id)(action)
   }
 
   def sendTransaction(topic: String, t: Transaction): Future[RecordMetadata] = {

@@ -1,24 +1,24 @@
-import React from 'react'
-import * as joint from 'jointjs'
-import * as dagre from 'dagre'
-import EspNode from './EspNode'
-import 'jointjs/dist/joint.css'
-import _ from 'lodash'
-import svgPanZoom from 'svg-pan-zoom'
-import {connect} from 'react-redux'
-import ActionsUtils from '../../actions/ActionsUtils'
-import NodeDetailsModal from './NodeDetailsModal'
-import EdgeDetailsModal from './EdgeDetailsModal'
-import {DropTarget} from 'react-dnd'
-import '../../stylesheets/graph.styl'
-import SVGUtils from '../../common/SVGUtils';
-import NodeUtils from './NodeUtils.js'
-import cssVariables from "../../stylesheets/_variables.styl"
+/* eslint-disable i18next/no-literal-string */
+import * as joint from "jointjs"
+import "jointjs/dist/joint.css"
+import _, {cloneDeep, defer} from "lodash"
+import PropTypes from "prop-types"
+import React from "react"
+import svgPanZoom from "svg-pan-zoom"
+import {getProcessCategory, getSelectionState} from "../../reducers/selectors/graph"
+import {getLoggedUser, getProcessDefinitionData} from "../../reducers/selectors/settings"
+import "../../stylesheets/graph.styl"
+import "./svg-export/export.styl"
 import * as GraphUtils from "./GraphUtils"
 import * as JointJsGraphUtils from "./JointJsGraphUtils"
-import PropTypes from 'prop-types'
+import EdgeDetailsModal from "./node-modal/EdgeDetailsModal"
+import NodeDetailsModal from "./node-modal/NodeDetailsModal"
+import NodeUtils from "./NodeUtils"
+import {prepareSvg} from "./svg-export/prepareSvg"
+import {drawGraph, directedLayout, isBackgroundObject, createPaper} from "./GraphPartialsInTS"
+import {FocusableDiv} from "./focusable"
 
-class Graph extends React.Component {
+export class Graph extends React.Component {
 
   redrawing = false
 
@@ -26,26 +26,24 @@ class Graph extends React.Component {
     processToDisplay: PropTypes.object.isRequired,
     groupingState: PropTypes.array,
     loggedUser: PropTypes.object.isRequired,
-    connectDropTarget: PropTypes.func
+    connectDropTarget: PropTypes.func,
+    width: PropTypes.string,
+    height: PropTypes.string,
   }
 
   constructor(props) {
-    super(props);
+    super(props)
 
-    this.graph = new joint.dia.Graph();
+    this.graph = new joint.dia.Graph()
     this.graph.on("remove", (e, f) => {
       if (e.isLink && !this.redrawing) {
         this.props.actions.nodesDisconnected(e.attributes.source.id, e.attributes.target.id)
       }
     })
-    this.nodesMoving();
+    this.nodesMoving()
 
     this.espGraphRef = React.createRef()
     this.parent = document.getElementById(this.props.parent)
-
-    this.windowListeners = {
-      resize: this.updateDimensions.bind(this)
-    }
   }
 
   getEspGraphRef = () => {
@@ -54,24 +52,16 @@ class Graph extends React.Component {
 
   componentDidMount() {
     this.processGraphPaper = this.createPaper()
-    this.drawGraph(this.props.processToDisplay, this.props.layout, this.props.processCounts, true, [])
+    this.processGraphPaper.freeze()
+    this.drawGraph(this.props.processToDisplay, this.props.layout, this.props.processCounts, this.props.processDefinitionData, this.props.expandedGroups)
+    this.processGraphPaper.unfreeze()
     this._prepareContentForExport()
-    this.drawGraph(this.props.processToDisplay, this.props.layout, this.props.processCounts, false, this.props.expandedGroups)
-    this.panAndZoom = this.enablePanZoom();
-    this.changeNodeDetailsOnClick();
-    this.hooverHandling();
-    this.cursorBehaviour();
-    this.highlightNodes(this.props.processToDisplay, this.props.nodeToDisplay);
-    _.forOwn(this.windowListeners, (listener, type) => window.addEventListener(type, listener))
-    this.updateDimensions()
-  }
-
-  updateDimensions() {
-    this.processGraphPaper.fitToContent()
-    this.svgDimensions(this.parent.offsetWidth, this.parent.offsetHeight)
-    if (this.props.parent !== subprocessParent) {
-      this.processGraphPaper.setDimensions(this.parent.offsetWidth, this.parent.offsetHeight)
-    }
+    this.panAndZoom = this.enablePanZoom()
+    this.changeNodeDetailsOnClick()
+    this.hooverHandling()
+    this.cursorBehaviour()
+    this.highlightNodes(this.props.processToDisplay, this.props.nodeToDisplay)
+    this.fitSmallAndLargeGraphs()
   }
 
   canAddNode(node) {
@@ -83,60 +73,46 @@ class Graph extends React.Component {
 
   addNode(node, position) {
     if (this.canAddNode(node)) {
-      this.props.actions.nodeAdded(node, position);
+      this.props.actions.nodeAdded(node, position)
     }
   }
-
-    componentWillUnmount() {
-        _.forOwn(this.windowListeners, (listener, type) => window.removeEventListener(type, listener))
-    }
 
   componentWillUpdate(nextProps, nextState) {
     const processChanged = !_.isEqual(this.props.processToDisplay, nextProps.processToDisplay) ||
       !_.isEqual(this.props.layout, nextProps.layout) ||
       !_.isEqual(this.props.processCounts, nextProps.processCounts) ||
       !_.isEqual(this.props.groupingState, nextProps.groupingState) ||
-      !_.isEqual(this.props.expandedGroups, nextProps.expandedGroups)
+      !_.isEqual(this.props.expandedGroups, nextProps.expandedGroups) ||
+      !_.isEqual(this.props.processDefinitionData, nextProps.processDefinitionData)
     if (processChanged) {
-      this.drawGraph(nextProps.processToDisplay, nextProps.layout, nextProps.processCounts, false, nextProps.expandedGroups)
+      this.drawGraph(nextProps.processToDisplay, nextProps.layout, nextProps.processCounts, nextProps.processDefinitionData, nextProps.expandedGroups)
     }
 
     //when e.g. layout changed we have to remember to highlight nodes
     const nodeToDisplayChanged = !_.isEqual(this.props.nodeToDisplay, nextProps.nodeToDisplay)
     const selectedNodesChanged = !_.isEqual(this.props.selectionState, nextProps.selectionState)
     if (processChanged || nodeToDisplayChanged || selectedNodesChanged) {
-      this.highlightNodes(nextProps.processToDisplay, nextProps.nodeToDisplay, nextProps.groupingState, nextProps.selectionState);
+      this.highlightNodes(nextProps.processToDisplay, nextProps.nodeToDisplay, nextProps.groupingState, nextProps.selectionState)
     }
   }
 
   componentDidUpdate(previousProps) {
     //we have to do this after render, otherwise graph is not fully initialized yet
-    const diff = _.difference(this.props.processToDisplay.nodes.map(n => n.id), previousProps.processToDisplay.nodes.map(n => n.id));
+    const diff = _.difference(this.props.processToDisplay.nodes.map(n => n.id), previousProps.processToDisplay.nodes.map(n => n.id))
     diff.forEach(nid => {
-      const cell = JointJsGraphUtils.findCell(this.graph, nid);
-      const cellView = this.processGraphPaper.findViewByModel(cell);
+      const cell = JointJsGraphUtils.findCell(this.graph, nid)
+      const cellView = this.processGraphPaper.findViewByModel(cell)
       if (cellView) {
-        this.handleInjectBetweenNodes(cellView);
+        this.handleInjectBetweenNodes(cellView)
       }
     })
   }
 
-  directedLayout() {
-    //TODO `layout` method can take graph or cells
-    //when joint.layout.DirectedGraph.layout(this.graph) is used here
-    //  then `toFront()` method works as expected but there are issues with group fold/unfold
-    //when joint.layout.DirectedGraph.layout(this.graph.getCells().filter(cell => !cell.get('backgroundObject')) is used here
-    // then `toFront()` method does not work at all, but group fold/unfold works just fine
-    joint.layout.DirectedGraph.layout(this.graph.getCells().filter(cell => !cell.get('backgroundObject')), {
-      graphlib: dagre.graphlib,
-      dagre: dagre,
-      nodeSep: 0,
-      edgeSep: 0,
-      rankSep: 75,
-      minLen: 0,
-      rankDir: "TB"
-    });
-    this.changeLayoutIfNeeded()
+  directedLayout = directedLayout.bind(this)
+
+  forceLayout = () => {
+    this.directedLayout()
+    defer(this.fitSmallAndLargeGraphs)
   }
 
   zoomIn() {
@@ -147,65 +123,27 @@ class Graph extends React.Component {
     this.panAndZoom.zoomOut()
   }
 
-  exportGraph() {
-    return this.state.exported
+  async exportGraph() {
+    return await prepareSvg(this._exportGraphOptions)
   }
 
   validateConnection = (cellViewS, magnetS, cellViewT, magnetT) => {
     const from = cellViewS.model.id
     const to = cellViewT.model.id
-    return magnetT && NodeUtils.canMakeLink(from, to, this.props.processToDisplay, this.props.processDefinitionData);
+    return magnetT && NodeUtils.canMakeLink(from, to, this.props.processToDisplay, this.props.processDefinitionData)
   }
 
-  createPaper = () => {
-    const canWrite = this.props.loggedUser.canWrite(this.props.processCategory) && !this.props.readonly;
-    return new joint.dia.Paper({
-      el: this.getEspGraphRef(),
-      gridSize: 1,
-      height: this.parent.clientHeight,
-      width: this.parent.clientWidth - 2 * this.props.padding,
-      model: this.graph,
-      snapLinks: {radius: 75},
-      interactive: function (cellView) {
-        const model = cellView.model
-        if (!canWrite) {
-          return false;
-        } else if (model instanceof joint.dia.Link) {
-          // Disable the default vertex add and label move functionality on pointerdown.
-          return {vertexAdd: false, labelMove: false};
-        } else if (model.get && model.get('backgroundObject')) {
-          //Disable moving group rect
-          return false
-        } else {
-          return true;
-        }
-      },
-      linkPinning: false,
-      defaultLink: EspNode.makeLink({}),
-      validateConnection: this.validateConnection
-    })
-      .on("cell:pointerup", (cellView, evt, x, y) => {
-        this.changeLayoutIfNeeded()
-        this.handleInjectBetweenNodes(cellView)
-      })
-      .on("link:connect", (c) => {
-        this.disconnectPreviousEdge(c.model.id);
-        this.props.actions.nodesConnected(
-          c.sourceView.model.attributes.nodeData,
-          c.targetView.model.attributes.nodeData
-        )
-      })
-  }
+  createPaper = createPaper.bind(this)
 
   disconnectPreviousEdge = (previousEdge) => {
-    const nodeIds = previousEdge.split("-").slice(0, 2);
+    const nodeIds = previousEdge.split("-").slice(0, 2)
     if (this.graphContainsEdge(nodeIds)) {
       this.props.actions.nodesDisconnected(...nodeIds)
     }
   }
 
   graphContainsEdge(nodeIds) {
-    return this.props.processToDisplay.edges.some(edge => edge.from === nodeIds[0] && edge.to === nodeIds[1]);
+    return this.props.processToDisplay.edges.some(edge => edge.from === nodeIds[0] && edge.to === nodeIds[1])
   }
 
   handleInjectBetweenNodes = (cellView) => {
@@ -214,165 +152,81 @@ class Graph extends React.Component {
       const source = JointJsGraphUtils.findCell(this.graph, linkBelowCell.attributes.source.id)
       const target = JointJsGraphUtils.findCell(this.graph, linkBelowCell.attributes.target.id)
       const middleMan = cellView.model
-      //TODO: consider doing this check in actions.js?
-      if (GraphUtils.canInjectNode(this.props.processToDisplay, source, middleMan, target, this.props.processDefinitionData)) {
+      const middleManNode = middleMan.attributes.nodeData
+
+      const sourceNodeData = source.attributes.nodeData
+      const sourceNode = NodeUtils.nodeIsGroup(sourceNodeData) ? _.last(sourceNodeData.nodes) : sourceNodeData
+
+      const targetNodeData = target.attributes.nodeData
+      const targetNode = NodeUtils.nodeIsGroup(targetNodeData) ? _.head(targetNodeData.nodes) : targetNodeData
+
+      if (NodeUtils.nodeIsGroup(middleManNode)) {
+        if (!NodeUtils.groupIncludesOneOfNodes(middleManNode, [sourceNode.id, targetNode.id])) {
+          // TODO: handle inject when group is middleman
+          this.props.notificationActions.info("Injecting group is not possible yet")
+        }
+      } else if (NodeUtils.nodesAreInOneGroup(this.props.processToDisplay, [sourceNode.id, targetNode.id])) {
+        // TODO: handle inject when source and target are in one group
+        this.props.notificationActions.info("Injecting node in group is not possible yet")
+      } else if (GraphUtils.canInjectNode(this.props.processToDisplay, sourceNode.id, middleMan.id, targetNode.id, this.props.processDefinitionData)) {
+        //TODO: consider doing inject check in actions.js?
         this.props.actions.injectNode(
-          source.attributes.nodeData,
-          middleMan.attributes.nodeData,
-          target.attributes.nodeData,
-          linkBelowCell.attributes.edgeData.edgeType
+          sourceNode,
+          middleManNode,
+          targetNode,
+          linkBelowCell.attributes.edgeData.edgeType,
         )
       }
     }
   }
 
-  time = (start, name) => {
-    const now = window.performance.now()
-    //uncomment to track performance...
-    //console.log("time: ", name, now - start)
-    return now
-  }
-
-  drawGraph = (process, layout, processCounts, forExport, expandedGroups) => {
-    this.redrawing = true
-
-    //leaving performance debug for now, as there is still room for improvement:
-    //handling forExport and processCounts without need of full redraw
-    const performance = window.performance;
-    let t = performance.now();
-
-    const nodesWithGroups = NodeUtils.nodesFromProcess(process, expandedGroups)
-    const edgesWithGroups = NodeUtils.edgesFromProcess(process, expandedGroups)
-    t = this.time(t, 'start')
-
-    const nodes = _.map(nodesWithGroups, (n) => {
-      return EspNode.makeElement(n, processCounts[n.id], forExport, this.props.processDefinitionData.nodesConfig || {})
-    })
-
-    t = this.time(t, 'nodes')
-
-    const edges = _.map(edgesWithGroups, (e) => EspNode.makeLink(e, forExport))
-    t = this.time(t, 'links')
-
-    const boundingRects = NodeUtils.getExpandedGroups(process, expandedGroups).map(expandedGroup => ({
-      group: expandedGroup,
-      rect: EspNode.boundingRect(nodes, expandedGroup, layout,
-        NodeUtils.createGroupNode(nodesWithGroups, expandedGroup))
-    }))
-
-    t = this.time(t, 'bounding')
-
-    const cells = boundingRects.map(g => g.rect).concat(nodes.concat(edges));
-
-    const newCells = _.filter(cells, cell => !this.graph.getCell(cell.id))
-    const deletedCells = _.filter(this.graph.getCells(), oldCell => !_.find(cells, cell => cell.id === oldCell.id))
-    const changedCells = _.filter(cells, cell => {
-      const old = this.graph.getCell(cell.id)
-      //TODO: some different ways of comparing?
-      return old && JSON.stringify(old.get("definitionToCompare")) !== JSON.stringify(cell.get("definitionToCompare"))
-    })
-
-    t = this.time(t, 'compute')
-
-    if (newCells.length + deletedCells.length + changedCells.length > 3) {
-      this.graph.resetCells(cells);
-    } else {
-      this.graph.removeCells(deletedCells)
-      this._updateChangedCells(changedCells);
-      this.graph.addCells(newCells)
-    }
-    t = this.time(t, 'redraw')
-
-    this._layout(layout);
-    this.time(t, 'layout')
-
-    _.forEach(boundingRects, rect => rect.rect.toBack())
-
-    this.redrawing = false
-  }
-
-  _layout(layout) {
-    if (_.isEmpty(layout)) {
-      this.directedLayout()
-    } else {
-      _.forEach(layout, el => {
-        const cell = this.graph.getCell(el.id)
-        if (cell && JSON.stringify(cell.get('position')) !== JSON.stringify(el.position)) cell.set('position', el.position)
-      });
-    }
-  }
-
-  _updateChangedCells(changedCells) {
-    _.forEach(changedCells, cell => {
-      const cellToRemove = this.graph.getCell(cell.id)
-      const links = cellToRemove.isElement ? this.graph.getConnectedLinks(cellToRemove) : []
-      cellToRemove.remove()
-      this.graph.addCell(cell)
-      _.forEach(links, l => {
-        l.remove()
-        this.graph.addCell(l)
-      })
-    })
-  }
+  drawGraph = drawGraph.bind(this)
 
   _prepareContentForExport = () => {
-    const oldHeight = this.getEspGraphRef().offsetHeight
-    const oldWidth = this.getEspGraphRef().offsetWidth
-    //we fit to content to be able to export svg nicely...
-    this.processGraphPaper.fitToContent()
-
-    this.svgDimensions(oldWidth, oldHeight)
-
-    //we have to set former width/height
-    this.processGraphPaper.setDimensions(oldWidth, oldHeight)
-  }
-
-  //Hack for FOP to properly export image from svg xml
-  svgDimensions = (width, height) => {
-    let svg = this.getEspGraphRef().getElementsByTagName("svg")[0]
-    svg.setAttribute('width', width)
-    svg.setAttribute('height', height)
-    this.setState({exported: SVGUtils.toXml(svg)})
+    const {options, defs} = this.processGraphPaper
+    this._exportGraphOptions = {
+      options: cloneDeep(options),
+      defs: defs.cloneNode(true),
+    }
   }
 
   highlightNodes = (data, nodeToDisplay, groupingState, selectionState) => {
     this.graph.getCells().forEach(cell => {
-      this.unhighlightCell(cell, 'node-validation-error')
-      this.unhighlightCell(cell, 'node-focused')
-      this.unhighlightCell(cell, 'node-focused-with-validation-error')
-      this.unhighlightCell(cell, 'node-grouping')
-    });
+      this.unhighlightCell(cell, "node-validation-error")
+      this.unhighlightCell(cell, "node-focused")
+      this.unhighlightCell(cell, "node-focused-with-validation-error")
+      this.unhighlightCell(cell, "node-grouping")
+    })
 
     const invalidNodeIds = _.keys((data.validationResult && data.validationResult.errors || {}).invalidNodes)
-    const selectedNodeIds = selectionState || [];
+    const selectedNodeIds = selectionState || []
 
-    invalidNodeIds.forEach(id =>
-      selectedNodeIds.includes(id) ?
-        this.highlightNode(id, 'node-focused-with-validation-error') : this.highlightNode(id, 'node-validation-error'));
+    invalidNodeIds.forEach(id => selectedNodeIds.includes(id) ?
+      this.highlightNode(id, "node-focused-with-validation-error") : this.highlightNode(id, "node-validation-error"));
 
-    (groupingState || []).forEach(id => this.highlightNode(id, 'node-grouping'));
+    (groupingState || []).forEach(id => this.highlightNode(id, "node-grouping"))
     selectedNodeIds.forEach(id => {
       if (!invalidNodeIds.includes(id)) {
-        this.highlightNode(id, 'node-focused')
+        this.highlightNode(id, "node-focused")
       }
-    });
+    })
   }
 
   highlightCell(cell, className) {
     this.processGraphPaper.findViewByModel(cell).highlight(null, {
       highlighter: {
-        name: 'addClass',
-        options: {className: className}
-      }
+        name: "addClass",
+        options: {className: className},
+      },
     })
   }
 
   unhighlightCell(cell, className) {
     this.processGraphPaper.findViewByModel(cell).unhighlight(null, {
       highlighter: {
-        name: 'addClass',
-        options: {className: className}
-      }
+        name: "addClass",
+        options: {className: className},
+      },
     })
   }
 
@@ -384,53 +238,65 @@ class Graph extends React.Component {
   }
 
   changeLayoutIfNeeded = () => {
-    let newLayout = this.graph.getElements().filter(el => !el.get('backgroundObject')).map(el => {
-      const pos = el.get('position');
+    let newLayout = this.graph.getElements().filter(el => !isBackgroundObject(el)).map(el => {
+      const pos = el.get("position")
       return {id: el.id, position: pos}
     })
 
-    if (!_.isEqual(this.props.layout, newLayout) && !this.props.readonly) {
+    if (!_.isEqual(this.props.layout, newLayout)) {
       this.props.actions && this.props.actions.layoutChanged(newLayout)
     }
   }
 
   enablePanZoom() {
-    const svgElement =  this.getEspGraphRef().getElementsByTagName("svg").item(0);
+    const paper = this.processGraphPaper
 
-    const panAndZoom = svgPanZoom(svgElement, {
-      viewportSelector: '.svg-pan-zoom_viewport',
-      fit: this.props.processToDisplay.nodes.length > 1,
+    const panAndZoom = svgPanZoom(paper.svg, {
+      viewportSelector: ".svg-pan-zoom_viewport",
+      fit: false,
+      contain: false,
       zoomScaleSensitivity: 0.4,
       controlIconsEnabled: false,
       panEnabled: false,
       dblClickZoomEnabled: false,
-      minZoom: 0.2,
-      maxZoom: 10
-    });
+      minZoom: 0.05,
+      maxZoom: 5,
+    })
 
-    this.processGraphPaper.on('blank:pointerdown', (evt, x, y) => {
-      panAndZoom.enablePan();
-    });
+    paper.on("blank:pointerdown", () => {
+      panAndZoom.enablePan()
+    })
 
-    this.processGraphPaper.on('cell:pointerup blank:pointerup', (cellView, event) => {
-      panAndZoom.disablePan();
-    });
+    paper.on("cell:pointerup blank:pointerup", () => {
+      panAndZoom.disablePan()
+    })
 
-    this.fitSmallAndLargeGraphs(panAndZoom)
     return panAndZoom
   }
 
-  fitSmallAndLargeGraphs = (panAndZoom) => {
-    const realZoom = panAndZoom.getSizes().realZoom
-    const toZoomBy = realZoom > 1 ? 1 / realZoom : 0.90 //the bigger zoom, the further we get
+  fitSmallAndLargeGraphs = () => {
+    const {panAndZoom} = this
+    if (!panAndZoom) {
+      return
+    }
+    panAndZoom.updateBBox()
+    panAndZoom.fit()
+    const {realZoom} = panAndZoom.getSizes()
+    const toZoomBy = realZoom > 1.2 ? 1 / realZoom : 0.8 //the bigger zoom, the further we get
     panAndZoom.zoomBy(toZoomBy)
+    panAndZoom.center()
   }
 
   changeNodeDetailsOnClick() {
-    this.processGraphPaper.on('cell:pointerdblclick', (cellView, evt, x, y) => {
-      const nodeData = cellView.model.attributes.nodeData;
-      if (nodeData) {
-        const prefixedNodeId = this.props.nodeIdPrefixForSubprocessTests + nodeData.id
+    this.processGraphPaper.on("cell:pointerdblclick", (cellView) => {
+      if (this.props.groupingState) {
+        return
+      }
+
+      const nodeDataId = cellView.model.attributes.nodeData?.id
+      if (nodeDataId) {
+        const nodeData = this.findNodeById(nodeDataId)
+        const prefixedNodeId = this.props.nodeIdPrefixForSubprocessTests + nodeDataId
         this.props.actions.displayModalNodeDetails({...nodeData, id: prefixedNodeId}, this.props.readonly)
       }
 
@@ -440,34 +306,34 @@ class Graph extends React.Component {
     })
 
     if (this.props.singleClickNodeDetailsEnabled) {
-      this.processGraphPaper.on('cell:pointerclick', (cellView, evt, x, y) => {
+      this.processGraphPaper.on("cell:pointerclick", (cellView, evt) => {
 
-        const nodeData = cellView.model.attributes.nodeData
-        if (!nodeData) {
+        const nodeDataId = cellView.model.attributes.nodeData?.id
+        if (!nodeDataId) {
           return
         }
 
-        this.props.actions.displayNodeDetails(cellView.model.attributes.nodeData)
+        this.props.actions.displayNodeDetails(this.findNodeById(nodeDataId))
 
-        if (evt.ctrlKey) {
-          this.props.actions.expandSelection(nodeData.id)
+        if (evt.ctrlKey || evt.metaKey) {
+          this.props.actions.expandSelection(nodeDataId)
         } else {
-          this.props.actions.resetSelection(nodeData.id)
+          this.props.actions.resetSelection(nodeDataId)
         }
 
         //TODO: is this the best place for this? if no, where should it be?
-        const targetClass = _.get(evt, 'originalEvent.target.className.baseVal')
-        if (targetClass.includes('collapseIcon') && nodeData) {
-          this.props.actions.collapseGroup(nodeData.id)
+        const targetClass = _.get(evt, "originalEvent.target.className.baseVal")
+        if (targetClass.includes("collapseIcon") && nodeDataId) {
+          this.props.actions.collapseGroup(nodeDataId)
         }
 
-        if (targetClass.includes('expandIcon') && nodeData) {
-          this.props.actions.expandGroup(nodeData.id)
+        if (targetClass.includes("expandIcon") && nodeDataId) {
+          this.props.actions.expandGroup(nodeDataId)
         }
       })
     }
 
-    this.processGraphPaper.on('blank:pointerdown', () => {
+    this.processGraphPaper.on("blank:pointerdown", () => {
       if (this.props.fetchedProcessDetails != null) {
         this.props.actions.displayNodeDetails(this.props.fetchedProcessDetails.json.properties)
         this.props.actions.resetSelection()
@@ -476,82 +342,56 @@ class Graph extends React.Component {
   }
 
   hooverHandling() {
-    this.processGraphPaper.on('cell:mouseover', (cellView) => {
+    this.processGraphPaper.on("cell:mouseover", (cellView) => {
       const model = cellView.model
-      this.showLabelOnHover(model);
-      this.showBackgroundIcon(model);
-    });
-    this.processGraphPaper.on('cell:mouseout', (cellView, evt) => {
-      this.hideBackgroundIcon(cellView.model, evt);
-    });
+      this.showLabelOnHover(model)
+      this.showBackgroundIcon(model)
+    })
+    this.processGraphPaper.on("blank:mouseover", () => {
+      this.hideBackgroundsIcons()
+    })
+  }
+
+  findNodeById(nodeId) {
+    const nodes = NodeUtils.nodesFromProcess(this.props.processToDisplay, this.props.expandedGroups)
+    return nodes.find(n => n.id === nodeId)
   }
 
   //needed for proper switch/filter label handling
   showLabelOnHover(model) {
-    if (model.get && !model.get('backgroundObject')) {
-      model.toFront();
+    if (!isBackgroundObject(model)) {
+      model.toFront()
     }
-    return model;
+    return model
   }
 
   //background is below normal node, we cannot use normal hover/mouseover/mouseout...
   showBackgroundIcon(model) {
-    if (model.get && model.get('backgroundObject')) {
-      const el = this.processGraphPaper.findViewByModel(model).vel
-      el.addClass('nodeIconForceHoverBox')
-      el.removeClass('nodeIconForceNoHoverBox')
+    if (isBackgroundObject(model)) {
+      const el = model.findView(this.processGraphPaper).vel
+      el.toggleClass("forced-hover", true)
     }
   }
 
-  //background is below normal node, we cannot use normal hover/mouseover/mouseout...
-  hideBackgroundIcon(model, evt) {
-    if (model.get && model.get('backgroundObject')) {
-      if (!this.checkIfCursorInRect(model, evt)) {
-        const el = this.processGraphPaper.findViewByModel(model).vel
-        el.removeClass('nodeIconForceHoverBox')
-        el.addClass('nodeIconForceNoHoverBox')
-      }
-
-    }
-  }
-
-  checkIfCursorInRect(model, evt) {
-    const relOffset = this.computeRelOffset({x: evt.clientX, y: evt.clientY})
-    const position = model.attributes.position
-    const size = model.attributes.size
-    return relOffset.x >= position.x && relOffset.y >= position.y && relOffset.x <= position.x + size.width && relOffset.y <= position.y + size.height;
+  hideBackgroundsIcons() {
+    this.graph.getElements().filter(isBackgroundObject).forEach(model => {
+      const el = model.findView(this.processGraphPaper).vel
+      el.toggleClass("forced-hover", false)
+    })
   }
 
   cursorBehaviour() {
-    this.processGraphPaper.on('blank:pointerdown', (evt, x, y) => {
+    this.processGraphPaper.on("blank:pointerdown", () => {
       if (this.getEspGraphRef()) {
         this.getEspGraphRef().style.cursor = "move"
       }
     })
 
-    this.processGraphPaper.on('blank:pointerup', (evt, x, y) => {
+    this.processGraphPaper.on("blank:pointerup", () => {
       if (this.getEspGraphRef()) {
         this.getEspGraphRef().style.cursor = "auto"
       }
     })
-  }
-
-  computeRelOffset(pointerOffset) {
-    const pan = this.panAndZoom ? this.panAndZoom.getPan() : {x: 0, y: 0}
-    const zoom = this.panAndZoom ? this.panAndZoom.getSizes().realZoom : 1
-
-    //TODO: is it REALLY ok?
-    const paddingLeft = cssVariables.svgGraphPaddingLeft
-    const paddingTop = cssVariables.svgGraphPaddingTop
-
-    const element = document.getElementById(this.props.divId)
-    const svg = element.getElementsByTagName("svg").item(0)
-    const graphPosition = svg.getBoundingClientRect()
-
-    return {
-      x: (pointerOffset.x - pan.x - graphPosition.left - paddingLeft) / zoom,
-      y: (pointerOffset.y - pan.y - graphPosition.top - paddingTop) / zoom
-    }
   }
 
   moveSelectedNodesRelatively(element, position) {
@@ -577,9 +417,9 @@ class Graph extends React.Component {
   render() {
     const toRender = (
       <div id="graphContainer" style={{padding: this.props.padding}}>
-        {!_.isEmpty(this.props.nodeToDisplay) ? <NodeDetailsModal/> : null}
+        {this.props.showNodeDetailsModal ? <NodeDetailsModal/> : null}
         {!_.isEmpty(this.props.edgeToDisplay) ? <EdgeDetailsModal/> : null}
-        <div ref={this.espGraphRef} id={this.props.divId}></div>
+        <FocusableDiv ref={this.espGraphRef} id={this.props.divId}/>
       </div>
     )
 
@@ -587,64 +427,14 @@ class Graph extends React.Component {
   }
 }
 
-const spec = {
-  drop: (props, monitor, component) => {
-    const relOffset = component.computeRelOffset(monitor.getClientOffset())
-    component.addNode(monitor.getItem(), relOffset)
-
-  }
-};
-
-function mapState(state, props) {
+export function commonState(state) {
   return {
-    divId: "esp-graph",
-    parent: "working-area",
-    padding: 0,
-    readonly: state.graphReducer.businessView,
-    singleClickNodeDetailsEnabled: true,
-    nodeIdPrefixForSubprocessTests: "",
-    processToDisplay: state.graphReducer.processToDisplay,
-    fetchedProcessDetails: state.graphReducer.fetchedProcessDetails,
-    processCounts: state.graphReducer.processCounts || {},
-    nodeToDisplay: state.graphReducer.nodeToDisplay,
-    edgeToDisplay: state.graphReducer.edgeToDisplay,
-    groupingState: state.graphReducer.groupingState,
-    expandedGroups: state.ui.expandedGroups,
-    layout: state.graphReducer.layout,
-    ...commonState(state)
-  };
-}
-
-function mapSubprocessState(state, props) {
-  return {
-    divId: "esp-graph-subprocess",
-    parent: subprocessParent,
-    padding: 30,
-    readonly: true,
-    singleClickNodeDetailsEnabled: false,
-    nodeIdPrefixForSubprocessTests: state.graphReducer.nodeToDisplay.id + "-", //TODO where should it be?
-    processToDisplay: props.processToDisplay,
-    processCounts: props.processCounts,
-    ...commonState(state)
+    layout: [],
+    processCategory: getProcessCategory(state),
+    loggedUser: getLoggedUser(state),
+    processDefinitionData: getProcessDefinitionData(state),
+    selectionState: getSelectionState(state),
   }
 }
 
-function commonState(state) {
-  return {
-    processCategory: state.graphReducer.fetchedProcessDetails.processCategory,
-    loggedUser: state.settings.loggedUser,
-    processDefinitionData: state.settings.processDefinitionData || {},
-    selectionState: state.graphReducer.selectionState,
-  }
-}
-
-const subprocessParent = "modal-content";
-
-export let BareGraph = connect(mapSubprocessState, ActionsUtils.mapDispatchWithEspActions)(Graph)
-
-Graph = DropTarget("element", spec, (connect) => ({connectDropTarget: connect.dropTarget()}))(Graph)
-
-//withRef is here so that parent can access methods in graph
-Graph = connect(mapState, ActionsUtils.mapDispatchWithEspActions, null, {forwardRef: true})(Graph)
-
-export default Graph;
+export const subprocessParent = "modal-content"

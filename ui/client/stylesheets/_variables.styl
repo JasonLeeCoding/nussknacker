@@ -1,28 +1,52 @@
+$icon-font-path = "~bootstrap/fonts/"
+$font-family-sans-serif = 'Open Sans', "Helvetica Neue", Helvetica, Arial, sans-serif
+
+primary = #0058a9
+
+$border-radius-base = 0px
+$border-radius-large = $border-radius-base
+$border-radius-small = $border-radius-base
+
+$input-border-focus = primary
+
+@require "~bootstrap/bootstrap/variables.styl"
+
+formControllHeight = $input-height-large
+
 containerPadding = 25px
 
-_fontFamily = 'Open Sans', "Helvetica Neue", Helvetica, Arial, sans-serif
-menuBkgColor = #3a3a3a
+focusColor = $input-border-focus
+
+menuActiveItem = rgba(0, 0, 0, 0.3)
+menuButtonBorderColor = #666666
+menuButtonActiveBKColor = #5d5d5d
+menuButtonBk = #808080
+menuBarHeight = 45px
+menuBkgColor = #333333
 menuTxtColor = #FFFFFF
 
-focusColor = #0058a9
-
-menuActiveItem =  rgba(0, 0, 0, 0.3)
-
-menuBarHeight = 69px
-
-buttonBkgColor = #4a4a4a
-buttonBkgHover = #666666
-buttonTextColor = #999999
+buttonBkgColor = #4d4d4d
+buttonBkgHover = #444444
+buttonTextColor = #cccccc
 buttonBorderColor = #666666
 buttonPadding = 22px
-buttonSize = 65px
+buttonSize = 72px
+buttonSmallSize = 48px
 
-sidebarWidth=300px
+sidebarWidth = 290px
+panelBackground = #4D4D4D
+panelHeaderBackground = #3e3e3e
+panelText = #cccccc
+panelHeaderText = #b3b3b3
+panelHeaderTextSize = 10px
+panelBorder = panelHeaderBackground
+toolbarsGap = 3px
+scrollThumbSize = 8px
+panelWidth = sidebarWidth + scrollThumbSize
 
 graphBkgColor = #b3b3b3
-panelHeaderBkgColor = #3a3a3a
 panelBkgColor = #444444
-defaultTextColor = #b3b3b3
+defaultTextColor = #ccc
 defaultFontSize = 11px
 panelTitleTextColor = #808080
 panelHeaderHeight = 26px
@@ -40,25 +64,29 @@ processesHoverColor = #b3b3b3
 buttonBlueBkgColor = #0E9AE0
 buttonBlueColor = #FFFFFF
 
+infoColor = #cccccc
 warningColor = #FF9A4D
 errorColor = #f25c6e
 okColor = #8fad60
+sucessColor = #64d864
 
 scrollbarColor = #666666
 
-toolHoverBkgColor = #4d4d4d
+toolHoverBkgColor = #444444
+toolHoverColor = #ccc
 labelBkgColor = #333333
 commentBkgColor = #333333
 commentBorderColor = #808080
+commentHeaderColor = #afafaf
 
 
-modalHeaderHeight = 25px
+modalHeaderHeight = 30px
 modalHeaderWidth = 86px
 modalBkgColor = panelBkgColor
 modalInputBkgColor = #333333
 modalInputTextColor = #cccccc
 modalLabelTextColor = #999999
-modalFooterBkgColor = panelHeaderBkgColor
+modalFooterBkgColor = #3a3a3a
 modalFooterHeight = 51px
 modalMaxHeight = 700px
 modalMaxWidth = 800px
@@ -71,16 +99,21 @@ docsIconColorHover = modalLabelTextColor
 testResultsColor = okColor
 markColor = okColor
 
-listBorderColor = #4f4f4f
-
-svgGraphPaddingLeft = 15
-svgGraphPaddingTop = 15
+listBorderColor = #434343
 
 hrColor = #777
 
 
 :export {
-  modalContentMaxHeight: modalContentMaxHeight
-  svgGraphPaddingLeft: svgGraphPaddingLeft
-  svgGraphPaddingTop: svgGraphPaddingTop
+	modalContentMaxHeight: modalContentMaxHeight
+	focusColor: focusColor
+	borderRadius: $border-radius-base
+	formControllHeight: formControllHeight
+	fontSize: $font-size-base
+
+	primary: primary
+	warningColor: warningColor
+	errorColor: errorColor
+	okColor: okColor
+	sucessColor: sucessColor
 }

@@ -1,37 +1,31 @@
 package pl.touk.nussknacker.engine.spel
 
-import java.lang.reflect.{Method, Modifier}
 import java.time.{LocalDate, LocalDateTime}
 import java.util
-import java.util.Collections
-import java.util.concurrent.TimeoutException
 
-import cats.data.{NonEmptyList, State, StateT, Validated}
-import cats.effect.IO
+import cats.data.Validated.Valid
+import cats.data.{NonEmptyList, Validated}
 import com.typesafe.scalalogging.LazyLogging
-import org.springframework.core.convert.TypeDescriptor
+import org.apache.commons.lang3.StringUtils
 import org.springframework.expression._
 import org.springframework.expression.common.{CompositeStringExpression, LiteralExpression}
 import org.springframework.expression.spel.ast.SpelNodeImpl
-import org.springframework.expression.spel.support.{ReflectiveMethodExecutor, ReflectiveMethodResolver, StandardEvaluationContext, StandardTypeLocator}
 import org.springframework.expression.spel.{SpelCompilerMode, SpelEvaluationException, SpelParserConfiguration, standard}
 import pl.touk.nussknacker.engine.api
 import pl.touk.nussknacker.engine.api.Context
 import pl.touk.nussknacker.engine.api.context.ValidationContext
-import pl.touk.nussknacker.engine.api.dict.{DictInstance, DictRegistry}
-import pl.touk.nussknacker.engine.api.exception.NonTransientException
-import pl.touk.nussknacker.engine.api.expression.{ExpressionParseError, ExpressionParser, TypedExpression, ValueWithLazyContext}
-import pl.touk.nussknacker.engine.api.lazyy.{ContextWithLazyValuesProvider, LazyContext, LazyValuesProvider}
-import pl.touk.nussknacker.engine.api.typed.TypedMap
+import pl.touk.nussknacker.engine.api.dict.DictRegistry
+import pl.touk.nussknacker.engine.api.expression.{ExpressionParseError, ExpressionParser, TypedExpression}
+import pl.touk.nussknacker.engine.api.process.ClassExtractionSettings
 import pl.touk.nussknacker.engine.api.typed.supertype.{CommonSupertypeFinder, SupertypeClassResolutionStrategy}
-import pl.touk.nussknacker.engine.api.typed.typing.{SingleTypingResult, TypingResult, Unknown}
-import pl.touk.nussknacker.engine.dict.{KeysDictTyper, LabelsDictTyper, LooseKeysDictTyper}
+import pl.touk.nussknacker.engine.api.typed.typing
+import pl.touk.nussknacker.engine.api.typed.typing.{SingleTypingResult, TypingResult}
+import pl.touk.nussknacker.engine.dict.{KeysDictTyper, LabelsDictTyper}
+import pl.touk.nussknacker.engine.expression.NullExpression
 import pl.touk.nussknacker.engine.functionUtils.CollectionUtils
 import pl.touk.nussknacker.engine.spel.SpelExpressionParser.Flavour
+import pl.touk.nussknacker.engine.spel.internal.EvaluationContextPreparer
 
-import scala.collection.concurrent.TrieMap
-import scala.concurrent.Future
-import scala.concurrent.duration._
 import scala.util.control.NonFatal
 
 /**
@@ -69,10 +63,13 @@ final case class ParsedSpelExpression(original: String, parser: () => Validated[
   }
 }
 
+class SpelExpressionEvaluationException(val expression: String, val ctxId: String, cause: Throwable)
+  extends RuntimeException(s"Expression [$expression] evaluation failed, message: ${cause.getMessage}", cause)
+
 class SpelExpression(parsed: ParsedSpelExpression,
                      expectedReturnType: TypingResult,
                      flavour: Flavour,
-                     prepareEvaluationContext: Context => EvaluationContext) extends api.expression.Expression with LazyLogging {
+                     evaluationContextPreparer: EvaluationContextPreparer) extends api.expression.Expression with LazyLogging {
 
   import pl.touk.nussknacker.engine.spel.SpelExpressionParser._
 
@@ -90,20 +87,12 @@ class SpelExpression(parsed: ParsedSpelExpression,
     }
 
   // TODO: better interoperability with scala type, mainly: scala.math.BigDecimal, scala.math.BigInt and collections
-  override def evaluate[T](ctx: Context,
-                           lazyValuesProvider: LazyValuesProvider): Future[ValueWithLazyContext[T]] = logOnException(ctx) {
+  override def evaluate[T](ctx: Context, globals: Map[String, Any]): T = logOnException(ctx) {
     if (expectedClass == classOf[SpelExpressionRepr]) {
-      return Future.successful(ValueWithLazyContext(SpelExpressionRepr(parsed.parsed, ctx, original).asInstanceOf[T], ctx.lazyContext))
+      return SpelExpressionRepr(parsed.parsed, ctx, globals, original).asInstanceOf[T]
     }
-
-    val evaluationContext = prepareEvaluationContext(ctx)
-    evaluationContext.setVariable(LazyValuesProviderVariableName, lazyValuesProvider)
-    evaluationContext.setVariable(LazyContextVariableName, ctx.lazyContext)
-
-    //TODO: async evaluation of lazy vals...
-    val value = parsed.getValue[T](evaluationContext, expectedClass)
-    val modifiedLazyContext = evaluationContext.lookupVariable(LazyContextVariableName).asInstanceOf[LazyContext]
-    Future.successful(ValueWithLazyContext(value, modifiedLazyContext))
+    val evaluationContext = evaluationContextPreparer.prepareEvaluationContext(ctx, globals)
+    parsed.getValue[T](evaluationContext, expectedClass)
   }
 
   private def logOnException[A](ctx: Context)(block: => A): A = {
@@ -115,7 +104,7 @@ class SpelExpression(parsed: ParsedSpelExpression,
         //we log twice here because LazyLogging cannot print context and stacktrace at the same time
         logger.debug("Expression evaluation failed. Original: {}. Context: {}", original, ctx)
         logger.debug("Expression evaluation failed", e)
-        throw e
+        throw new SpelExpressionEvaluationException(original, ctx.id, e)
     }
   }
 }
@@ -125,25 +114,37 @@ class SpelExpressionParser(parser: org.springframework.expression.spel.standard.
                            dictRegistry: DictRegistry,
                            enableSpelForceCompile: Boolean,
                            flavour: Flavour,
-                           prepareEvaluationContext: Context => EvaluationContext) extends ExpressionParser {
+                           prepareEvaluationContext: EvaluationContextPreparer) extends ExpressionParser {
 
   import pl.touk.nussknacker.engine.spel.SpelExpressionParser._
 
   override final val languageId: String = flavour.languageId
 
-  override def parseWithoutContextValidation(original: String): Validated[NonEmptyList[ExpressionParseError], api.expression.Expression] = {
-    baseParse(original).map { parsed =>
-      expression(ParsedSpelExpression(original, () => baseParse(original), parsed), Unknown)
+  override def parseWithoutContextValidation(original: String, expectedType: TypingResult): Validated[NonEmptyList[ExpressionParseError], api.expression.Expression] = {
+    if (shouldUseNullExpression(original)) {
+      Valid(NullExpression(original, flavour))
+    } else {
+      baseParse(original).map { parsed =>
+        expression(ParsedSpelExpression(original, () => baseParse(original), parsed), expectedType)
+      }
     }
   }
 
   override def parse(original: String, ctx: ValidationContext, expectedType: TypingResult): Validated[NonEmptyList[ExpressionParseError], TypedExpression] = {
-    baseParse(original).andThen { parsed =>
-      validator.validate(parsed, ctx, expectedType).map((_, parsed))
-    }.map { case (combinedResult, parsed) =>
-      TypedExpression(expression(ParsedSpelExpression(original, () => baseParse(original), parsed), expectedType), combinedResult.finalResult, combinedResult.typingInfo)
+    if (shouldUseNullExpression(original)) {
+      Valid(TypedExpression(
+        NullExpression(original, flavour), expectedType, SpelExpressionTypingInfo(Map.empty, typing.Unknown)))
+    } else {
+      baseParse(original).andThen { parsed =>
+        validator.validate(parsed, ctx, expectedType).map((_, parsed))
+      }.map { case (combinedResult, parsed) =>
+        TypedExpression(expression(ParsedSpelExpression(original, () => baseParse(original), parsed), expectedType), combinedResult.finalResult, combinedResult.typingInfo)
+      }
     }
   }
+
+  private def shouldUseNullExpression(original: String): Boolean
+    = flavour != Template && StringUtils.isBlank(original)
 
   private def baseParse(original: String): Validated[NonEmptyList[ExpressionParseError], Expression] = {
     Validated.catchNonFatal(parser.parseExpression(original, flavour.parserContext.orNull)).leftMap(ex => NonEmptyList.of(ExpressionParseError(ex.getMessage)))
@@ -158,9 +159,6 @@ class SpelExpressionParser(parser: org.springframework.expression.spel.standard.
 
   def typingDictLabels =
     new SpelExpressionParser(parser, validator.withTyper(_.withDictTyper(new LabelsDictTyper(dictRegistry))), dictRegistry, enableSpelForceCompile, flavour, prepareEvaluationContext)
-
-  def looselyTypingDictKeys =
-    new SpelExpressionParser(parser, validator.withTyper(_.withDictTyper(new LooseKeysDictTyper(dictRegistry))), dictRegistry, enableSpelForceCompile, flavour, prepareEvaluationContext)
 
 }
 
@@ -181,7 +179,8 @@ object SpelExpressionParser extends LazyLogging {
     parsed match {
       case e:standard.SpelExpression => forceCompile(e)
       case e:CompositeStringExpression => e.getExpressions.foreach(forceCompile)
-      case e:LiteralExpression =>   
+      case _:LiteralExpression =>
+      case _:NullExpression =>
     }
   }
 
@@ -200,242 +199,31 @@ object SpelExpressionParser extends LazyLogging {
 
 
   //caching?
-  def default(classLoader: ClassLoader, dictRegistry: DictRegistry, enableSpelForceCompile: Boolean, strictTypeChecking: Boolean, imports: List[String], flavour: Flavour): SpelExpressionParser = {
+  def default(classLoader: ClassLoader,
+              dictRegistry: DictRegistry,
+              enableSpelForceCompile: Boolean,
+              strictTypeChecking: Boolean,
+              imports: List[String],
+              flavour: Flavour,
+              strictMethodsChecking: Boolean)
+             (implicit classExtractionSettings: ClassExtractionSettings): SpelExpressionParser = {
     val functions = Map(
       "today" -> classOf[LocalDate].getDeclaredMethod("now"),
       "now" -> classOf[LocalDateTime].getDeclaredMethod("now"),
       "distinct" -> classOf[CollectionUtils].getDeclaredMethod("distinct", classOf[util.Collection[_]]),
       "sum" -> classOf[CollectionUtils].getDeclaredMethod("sum", classOf[util.Collection[_]])
     )
-    //FIXME: configurable timeout...
-    val lazyValuesTimeout = 1 minute
     val parser = new org.springframework.expression.spel.standard.SpelExpressionParser(
       //we have to pass classloader, because default contextClassLoader can be sth different than we expect...
       new SpelParserConfiguration(SpelCompilerMode.IMMEDIATE, classLoader)
     )
-    val propertyAccessors = Seq(
-      NullPropertyAccessor, //must come first
-      new ScalaLazyPropertyAccessor(lazyValuesTimeout), // must be before scalaPropertyAccessor
-      ScalaOptionOrNullPropertyAccessor, // // must be before scalaPropertyAccessor
-      ScalaPropertyAccessor,
-      StaticPropertyAccessor,
-      MapPropertyAccessor,
-      TypedMapPropertyAccessor,
-      TypedDictInstancePropertyAccessor,
-      // it can add performance overhead so it will be better to keep it on the bottom
-      MapLikePropertyAccessor
-    )
+    val propertyAccessors = internal.propertyAccessors.configured()
 
-    val commonSupertypeFinder = new CommonSupertypeFinder(if (strictTypeChecking) SupertypeClassResolutionStrategy.Intersection else SupertypeClassResolutionStrategy.Union)
-    val validator = new SpelExpressionValidator(new Typer(classLoader, commonSupertypeFinder, new KeysDictTyper(dictRegistry)))
-    new SpelExpressionParser(parser, validator, dictRegistry, enableSpelForceCompile, flavour,
-      prepareEvaluationContext(classLoader, imports, propertyAccessors, functions))
-  }
-
-  private def prepareEvaluationContext[T](classLoader: ClassLoader,
-                                          expressionImports: List[String],
-                                          propertyAccessors: Seq[PropertyAccessor],
-                                          expressionFunctions: Map[String, Method])
-                                         (ctx: Context): EvaluationContext = {
-    val evaluationContext = new StandardEvaluationContext()
-    val locator = new StandardTypeLocator(classLoader)
-    expressionImports.foreach(locator.registerImport)
-    evaluationContext.setTypeLocator(locator)
-    propertyAccessors.foreach(evaluationContext.addPropertyAccessor)
-
-    evaluationContext.setMethodResolvers(optimizedMethodResolvers())
-
-    ctx.variables.foreach {
-      case (k, v) => evaluationContext.setVariable(k, v)
-    }
-    expressionFunctions.foreach {
-      case (k, v) => evaluationContext.registerFunction(k, v)
-    }
-    evaluationContext
-  }
-
-  private def optimizedMethodResolvers() : java.util.List[MethodResolver] = {
-    val mr = new ReflectiveMethodResolver {
-      override def resolve(context: EvaluationContext, targetObject: scala.Any, name: String, argumentTypes: util.List[TypeDescriptor]): MethodExecutor = {
-        val methodExecutor = super.resolve(context, targetObject, name, argumentTypes).asInstanceOf[ReflectiveMethodExecutor]
-        new OmitAnnotationsMethodExecutor(methodExecutor)
-      }
-    }
-    Collections.singletonList(mr)
-  }
-
-  object NullPropertyAccessor extends PropertyAccessor with ReadOnly {
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-
-    override def canRead(context: EvaluationContext, target: Any, name: String): Boolean = target == null
-
-    override def read(context: EvaluationContext, target: Any, name: String): TypedValue =
-      //can we extract anything else here?
-      throw NonTransientException(name, s"Cannot invoke method/property $name on null object")
-  }
-
-  object ScalaPropertyAccessor extends PropertyAccessor with ReadOnly with Caching {
-
-    override protected def reallyFindMethod(name: String, target: Class[_]) : Option[Method] =
-      target.getMethods.find(m => m.getParameterCount == 0 && m.getName == name)
-
-
-    override protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): AnyRef = {
-      method.invoke(target)
-    }
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-  }
-
-  object StaticPropertyAccessor extends PropertyAccessor with ReadOnly with StaticMethodCaching {
-
-    override protected def reallyFindMethod(name: String, target: Class[_]): Option[Method] = {
-      target.asInstanceOf[Class[_]].getMethods.find(m =>
-        m.getParameterCount == 0 && m.getName == name && Modifier.isStatic(m.getModifiers)
-      )
-    }
-
-    override protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): Any = {
-      method.invoke(target)
-    }
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-  }
-
-  object ScalaOptionOrNullPropertyAccessor extends PropertyAccessor with ReadOnly with Caching {
-
-    override protected def reallyFindMethod(name: String, target: Class[_]) : Option[Method] = {
-      target.getMethods.find(m => m.getParameterCount == 0 && m.getName == name && classOf[Option[_]].isAssignableFrom(m.getReturnType))
-    }
-
-    override protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): Any = {
-      method.invoke(target).asInstanceOf[Option[Any]].orNull
-    }
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-  }
-
-
-  class ScalaLazyPropertyAccessor(lazyValuesTimeout: Duration) extends PropertyAccessor with ReadOnly with Caching {
-
-    override protected def reallyFindMethod(name: String, target: Class[_]) : Option[Method] = {
-      target.getMethods.find(
-        m => m.getParameterCount == 0 &&
-        m.getReturnType == classOf[State[_,_]] &&
-        m.getName == name)
-    }
-
-    override protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): Any = {
-      val f = method
-        .invoke(target)
-        .asInstanceOf[StateT[IO, ContextWithLazyValuesProvider, Any]]
-      val lazyProvider = context.lookupVariable(LazyValuesProviderVariableName).asInstanceOf[LazyValuesProvider]
-      val ctx = context.lookupVariable(LazyContextVariableName).asInstanceOf[LazyContext]
-      val futureResult = f.run(ContextWithLazyValuesProvider(ctx, lazyProvider))
-      //TODO: async invocation :)
-      val (modifiedContext, value) = futureResult.unsafeRunTimed(lazyValuesTimeout)
-        .getOrElse(throw new TimeoutException(s"Timout on evaluation ${method.getDeclaringClass}:${method.getName}"))
-      context.setVariable(LazyContextVariableName, modifiedContext.context)
-      value
-    }
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-
-  }
-
-  object MapPropertyAccessor extends PropertyAccessor with ReadOnly {
-
-    override def canRead(context: EvaluationContext, target: scala.Any, name: String): Boolean =
-      target.asInstanceOf[java.util.Map[_, _]].containsKey(name)
-
-    override def read(context: EvaluationContext, target: scala.Any, name: String) =
-      new TypedValue(target.asInstanceOf[java.util.Map[_, _]].get(name))
-
-    override def getSpecificTargetClasses = Array(classOf[java.util.Map[_, _]])
-  }
-
-  object TypedMapPropertyAccessor extends PropertyAccessor with ReadOnly {
-    //in theory this always happends, because we typed it properly ;)
-    override def canRead(context: EvaluationContext, target: scala.Any, name: String): Boolean =
-      target.asInstanceOf[TypedMap].fields.contains(name)
-
-    override def read(context: EvaluationContext, target: scala.Any, name: String) =
-      new TypedValue(target.asInstanceOf[TypedMap].fields(name))
-
-    override def getSpecificTargetClasses = Array(classOf[TypedMap])
-  }
-
-  object TypedDictInstancePropertyAccessor extends PropertyAccessor with ReadOnly {
-    //in theory this always happends, because we typed it properly ;)
-    override def canRead(context: EvaluationContext, target: scala.Any, key: String) =
-      true
-
-    // we already replaced dict's label with keys so we can just return value based on key
-    override def read(context: EvaluationContext, target: scala.Any, key: String) =
-      new TypedValue(target.asInstanceOf[DictInstance].value(key))
-
-    override def getSpecificTargetClasses = Array(classOf[DictInstance])
-  }
-
-  // mainly for avro's GenericRecord purpose
-  object MapLikePropertyAccessor extends PropertyAccessor with Caching with ReadOnly {
-
-    override protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): Any = {
-      method.invoke(target, propertyName)
-    }
-
-    override protected def reallyFindMethod(name: String, target: Class[_]): Option[Method] = {
-      target.getMethods.find(m => m.getName == "get" && (m.getParameterTypes sameElements Array(classOf[String])))
-    }
-
-    override def getSpecificTargetClasses: Array[Class[_]] = null
-  }
-
-  trait Caching extends CachingBase { self: PropertyAccessor =>
-
-    override def canRead(context: EvaluationContext, target: scala.Any, name: String): Boolean =
-      !target.isInstanceOf[Class[_]] && findMethod(name, target).isDefined
-
-    override protected def extractClassFromTarget(target: Any): Option[Class[_]] =
-      Option(target).map(_.getClass)
-  }
-
-  trait StaticMethodCaching extends CachingBase { self: PropertyAccessor =>
-    override def canRead(context: EvaluationContext, target: scala.Any, name: String): Boolean =
-      target.isInstanceOf[Class[_]] && findMethod(name, target).isDefined
-
-    override protected def extractClassFromTarget(target: Any): Option[Class[_]] = Option(target).map(_.asInstanceOf[Class[_]])
-  }
-
-  trait CachingBase { self: PropertyAccessor =>
-    private val methodsCache = new TrieMap[(String, Class[_]), Option[Method]]()
-
-    override def read(context: EvaluationContext, target: scala.Any, name: String): TypedValue =
-      findMethod(name, target)
-        .map { method =>
-          new TypedValue(invokeMethod(name, method, target, context))
-        }
-        .getOrElse(throw new IllegalAccessException("Property is not readable"))
-
-    protected def findMethod(name: String, target: Any): Option[Method] = {
-      //this should *not* happen as we have NullPropertyAccessor
-      val targetClass = extractClassFromTarget(target).getOrElse(throw new IllegalArgumentException(s"Null target for $name"))
-      methodsCache.getOrElseUpdate((name, targetClass), reallyFindMethod(name, targetClass))
-    }
-
-    protected def extractClassFromTarget(target: Any): Option[Class[_]]
-    protected def invokeMethod(propertyName: String, method: Method, target: Any, context: EvaluationContext): Any
-    protected def reallyFindMethod(name: String, target: Class[_]) : Option[Method]
-  }
-
-  trait ReadOnly { self: PropertyAccessor =>
-
-    override def write(context: EvaluationContext, target: scala.Any, name: String, newValue: scala.Any) =
-      throw new IllegalAccessException("Property is not writeable")
-
-    override def canWrite(context: EvaluationContext, target: scala.Any, name: String) = false
-
+    val classResolutionStrategy = if (strictTypeChecking) SupertypeClassResolutionStrategy.Intersection else SupertypeClassResolutionStrategy.Union
+    val commonSupertypeFinder = new CommonSupertypeFinder(classResolutionStrategy, strictTypeChecking)
+    val validator = new SpelExpressionValidator(new Typer(classLoader, commonSupertypeFinder, new KeysDictTyper(dictRegistry), strictMethodsChecking))
+    val evaluationContextPreparer = new EvaluationContextPreparer(classLoader, imports, propertyAccessors, functions)
+    new SpelExpressionParser(parser, validator, dictRegistry, enableSpelForceCompile, flavour, evaluationContextPreparer)
   }
 
 }

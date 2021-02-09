@@ -1,4 +1,5 @@
-import NodeUtils from './NodeUtils'
+import NodeUtils from "./NodeUtils"
+import _ from "lodash"
 
 export function mapProcessWithNewNode(process, before, after) {
   return {
@@ -12,8 +13,22 @@ export function mapProcessWithNewNode(process, before, after) {
         return e
       }
     }),
-    nodes: _.map(process.nodes, (n) => { return _.isEqual(n, before) ? after : n }),
-    properties: NodeUtils.nodeIsProperties(before) ? after : process.properties
+    nodes: _.map(process.nodes, (n) => { return _.isEqual(n, before) ? after : mapBranchParametersWithNewNode(before.id, after.id, n) }),
+    properties: NodeUtils.nodeIsProperties(before) ? after : process.properties,
+  }
+}
+
+//we do mapping here, because we validate changed process before closing modal, and before applying state change in reducer.
+function mapBranchParametersWithNewNode(beforeId, afterId, node) {
+  if (beforeId !== afterId && node.branchParameters?.find(bp => bp.branchId === beforeId)) {
+    const newNode = _.cloneDeep(node)
+    const branchParameter = newNode.branchParameters.find(bp => bp.branchId === beforeId)
+    if (branchParameter) {
+      branchParameter.branchId = afterId
+    }
+    return newNode
+  } else {
+    return node
   }
 }
 
@@ -26,7 +41,7 @@ export function mapProcessWithNewEdge(process, before, after) {
       } else {
         return e
       }
-    })
+    }),
   }
 }
 
@@ -34,44 +49,46 @@ export function deleteNode(process, id) {
   return {
     ...process,
     edges: _.filter(process.edges, (e) => !_.isEqual(e.from, id) && !_.isEqual(e.to, id)),
-    nodes: _.filter(process.nodes, (n) => !_.isEqual(n.id, id))
+    nodes: _.filter(process.nodes, (n) => !_.isEqual(n.id, id)),
   }
 }
 
-export function canInjectNode(process, source, middleMan, target, processDefinitionData) {
-  const processAfterDisconnection = deleteEdge(process, source.id, target.id)
-  const canConnectSourceToMiddleMan = NodeUtils.canMakeLink(source.id, middleMan.id, processAfterDisconnection, processDefinitionData)
-  const processWithConnectedSourceAndMiddleMan = addEdge(processAfterDisconnection, source.id, middleMan.id)
-  const canConnectMiddleManToTarget = NodeUtils.canMakeLink(middleMan.id, target.id, processWithConnectedSourceAndMiddleMan, processDefinitionData)
+export function canInjectNode(process, sourceId, middleManId, targetId, processDefinitionData) {
+  const processAfterDisconnection = deleteEdge(process, sourceId, targetId)
+  const canConnectSourceToMiddleMan = NodeUtils.canMakeLink(sourceId, middleManId, processAfterDisconnection, processDefinitionData)
+  const processWithConnectedSourceAndMiddleMan = addEdge(processAfterDisconnection, sourceId, middleManId)
+  const canConnectMiddleManToTarget = NodeUtils.canMakeLink(middleManId, targetId, processWithConnectedSourceAndMiddleMan, processDefinitionData)
   return canConnectSourceToMiddleMan && canConnectMiddleManToTarget
 }
 
 function deleteEdge(process, fromId, toId) {
   return {
-  ...process,
-    edges: _.reject(process.edges, (e) => e.from === fromId && e.to === toId)
+    ...process,
+    edges: _.reject(process.edges, (e) => e.from === fromId && e.to === toId),
   }
 }
 
 function addEdge(process, fromId, toId) {
   return {
     ...process,
-    edges: process.edges.concat({from: fromId, to: toId})
+    edges: process.edges.concat({from: fromId, to: toId}),
   }
 }
 
-export function computeBoundingRect(expandedGroup, layout, nodes, nodeHeight, margin) {
+export function computeBoundingRect(expandedGroup, layout, nodes, margin) {
 
   const widthsHeights = expandedGroup.nodes
-    .map(n => {
-      const bbox = nodes.find(node => node.id == n).get('size')
-      const layoutForNode = ((layout || []).find(k => k.id == n) || {}).position || {}
-      return {height: nodeHeight, width: bbox.width, x: layoutForNode.x || 0, y: layoutForNode.y || 0}
+    .map(id => nodes.find(node => node.id == id))
+    .filter(Boolean)
+    .map(node => {
+      const {height, width} = node.get("size")
+      const {position = {}} = layout.find(k => k.id == node.id) || {}
+      return {height, width, x: position.x || 0, y: position.y || 0}
     })
   const x = _.min(widthsHeights.map(wh => wh.x)) - margin
-  const y =  _.min(widthsHeights.map(wh => wh.y)) - margin
+  const y = _.min(widthsHeights.map(wh => wh.y)) - margin
   const width = _.max(widthsHeights.map((wh) => wh.x + wh.width - x)) + margin
   const height = _.max(widthsHeights.map((wh) => wh.y + wh.height - y)) + margin
-  return { x, y, width, height}
+  return {x, y, width, height}
 
 }

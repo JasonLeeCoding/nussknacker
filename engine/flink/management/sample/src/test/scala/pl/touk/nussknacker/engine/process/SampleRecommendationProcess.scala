@@ -2,26 +2,21 @@ package pl.touk.nussknacker.engine.process
 
 import com.typesafe.config.ConfigFactory
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
-import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
+import org.scalatest.{FlatSpec, Matchers}
 import pl.touk.nussknacker.engine.api.ProcessVersion
 import pl.touk.nussknacker.engine.build.EspProcessBuilder
-import pl.touk.nussknacker.engine.flink.test.{FlinkTestConfiguration, StoppableExecutionEnvironment}
-import pl.touk.nussknacker.engine.management.sample.DemoProcessConfigCreator
-import pl.touk.nussknacker.engine.process.compiler.FlinkStreamingProcessCompiler
+import pl.touk.nussknacker.engine.flink.test.FlinkSpec
+import pl.touk.nussknacker.engine.management.sample.UnitTestsProcessConfigCreator
+import pl.touk.nussknacker.engine.process.compiler.FlinkProcessCompiler
+import pl.touk.nussknacker.engine.process.registrar.FlinkProcessRegistrar
 import pl.touk.nussknacker.engine.spel
+import pl.touk.nussknacker.engine.testing.LocalModelData
 
-class SampleRecommendationProcess extends FlatSpec with BeforeAndAfterAll with Matchers {
+class SampleRecommendationProcess extends FlatSpec with FlinkSpec with Matchers {
 
   import spel.Implicits._
 
-  private val env: StoppableExecutionEnvironment = StoppableExecutionEnvironment(FlinkTestConfiguration.configuration)
-
-  private val creator = new DemoProcessConfigCreator
-
-  override protected def afterAll(): Unit = {
-    super.afterAll()
-    env.stop()
-  }
+  private val creator = new UnitTestsProcessConfigCreator
 
   it should "serialize process and run" in {
     val process =
@@ -34,13 +29,12 @@ class SampleRecommendationProcess extends FlatSpec with BeforeAndAfterAll with M
 
     val config = ConfigFactory.load()
 
-
-    new FlinkStreamingProcessCompiler(creator, config).createFlinkProcessRegistrar()
+    val env = flinkMiniCluster.createExecutionEnvironment()
+    val modelData = LocalModelData(config, creator)
+    FlinkProcessRegistrar(new FlinkProcessCompiler(modelData), config, ExecutionConfigPreparer.unOptimizedChain(modelData))
       .register(new StreamExecutionEnvironment(env), process, ProcessVersion.empty)
 
-    val result = env.execute(process.id)
-
-    env.runningJobs().exists(_ == result.getJobID) shouldBe true
-
+    env.withJobRunning(process.id) {}
   }
+
 }

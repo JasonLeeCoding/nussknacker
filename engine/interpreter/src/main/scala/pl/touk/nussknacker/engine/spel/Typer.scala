@@ -18,16 +18,18 @@ import pl.touk.nussknacker.engine.api.process.ClassExtractionSettings
 import pl.touk.nussknacker.engine.api.typed.supertype.{CommonSupertypeFinder, NumberTypesPromotionStrategy}
 import pl.touk.nussknacker.engine.api.typed.typing._
 import pl.touk.nussknacker.engine.dict.SpelDictTyper
+import pl.touk.nussknacker.engine.expression.NullExpression
 import pl.touk.nussknacker.engine.spel.Typer._
 import pl.touk.nussknacker.engine.spel.ast.SpelAst.SpelNodeId
 import pl.touk.nussknacker.engine.spel.ast.SpelNodePrettyPrinter
-import pl.touk.nussknacker.engine.spel.typer.TypeMethodReference
+import pl.touk.nussknacker.engine.spel.typer.{MapLikePropertyTyper, TypeMethodReference}
 import pl.touk.nussknacker.engine.types.EspTypeUtils
 
+import scala.annotation.tailrec
 import scala.reflect.runtime._
 
 private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: CommonSupertypeFinder,
-                          dictTyper: SpelDictTyper) extends LazyLogging {
+                          dictTyper: SpelDictTyper, strictMethodsChecking: Boolean)(implicit settings: ClassExtractionSettings) extends LazyLogging {
 
   import ast.SpelAst._
 
@@ -37,27 +39,31 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
         typeExpression(e, ctx)
       case e:CompositeStringExpression =>
         val validatedParts = e.getExpressions.toList.map(typeExpression(_, ctx)).sequence
-
-        validatedParts.map(partResults => CollectedTypingResult(Monoid.combineAll(partResults.map(_.intermediateResults)), Typed[String]))
+        // We drop intermediate results here:
+        // * It's tricky to combine it as each of the subexpressions has it's own abstract tree with positions relative to the subexpression's starting position
+        // * CompositeStringExpression is dedicated to template SpEL expressions. It cannot be nested (as templates cannot be nested)
+        // * Currently we don't use intermediate typing results outside of Typer
+        validatedParts.map(_ => CollectedTypingResult.withEmptyIntermediateResults(Typed[String]))
       case e:LiteralExpression =>
+        Valid(CollectedTypingResult.withEmptyIntermediateResults(Typed[String]))
+      case e:NullExpression =>
         Valid(CollectedTypingResult.withEmptyIntermediateResults(Typed[String]))
     }
   }
 
   private def typeExpression(spelExpression: standard.SpelExpression, ctx: ValidationContext): ValidatedNel[ExpressionParseError, CollectedTypingResult] = {
-    Validated.fromOption(Option(spelExpression.getAST), NonEmptyList.of(ExpressionParseError("Empty expression"))).andThen { ast =>
-      val result = typeNode(ctx, ast, TypingContext(List.empty, Map.empty))
-      logger.whenTraceEnabled {
-        result match {
-          case Valid(collectedResult) =>
-            val printer = new SpelNodePrettyPrinter(n => collectedResult.intermediateResults.get(SpelNodeId(n)).map(_.display).getOrElse("NOT_TYPED"))
-            logger.trace("typed valid expression: " + printer.print(ast))
-          case Invalid(errors) =>
-            logger.trace(s"typed invalid expression: ${spelExpression.getExpressionString}, errors: ${errors.toList.mkString(", ")}")
-        }
+    val ast = spelExpression.getAST
+    val result = typeNode(ctx, ast, TypingContext(List.empty, Map.empty))
+    logger.whenTraceEnabled {
+      result match {
+        case Valid(collectedResult) =>
+          val printer = new SpelNodePrettyPrinter(n => collectedResult.intermediateResults.get(SpelNodeId(n)).map(_.display).getOrElse("NOT_TYPED"))
+          logger.trace("typed valid expression: " + printer.print(ast))
+        case Invalid(errors) =>
+          logger.trace(s"typed invalid expression: ${spelExpression.getExpressionString}, errors: ${errors.toList.mkString(", ")}")
       }
-      result
     }
+    result
   }
 
   private def typeNode(validationContext: ValidationContext, node: SpelNode, current: TypingContext)
@@ -123,9 +129,9 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
 
 
       case e: InlineList => withTypedChildren { children =>
-        val childrenTypes = children.toSet
-        val genericType = if (childrenTypes.contains(Unknown) || childrenTypes.size != 1) Unknown else childrenTypes.head
-        Valid(TypedClass(classOf[java.util.List[_]], List(genericType)))
+        //We don't want Typed.empty here, as currently it means it won't validate for any signature
+        val elementType = if (children.isEmpty) Unknown else Typed(children.toSet)
+        Valid(Typed.genericTypeClass[java.util.List[_]](List(elementType)))
       }
 
       case e: InlineMap =>
@@ -149,11 +155,12 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
           }
         }
 
-      case e: MethodReference =>
-        TypeMethodReference(e, current.stack) match {
-          case Right(typingResult) => fixedWithNewCurrent(current.popStack)(typingResult)
-          case Left(errorMsg) => invalid(errorMsg)
+      case e: MethodReference => typeChildren(validationContext, node, current.popStack) { typedParams =>
+        TypeMethodReference(e.getName, current.stack, typedParams) match {
+          case Right(typingResult) => Valid(typingResult)
+          case Left(errorMsg) => if(strictMethodsChecking) invalid(errorMsg) else Valid(Unknown)
         }
+      }
 
       case e: OpEQ => checkEqualityLikeOperation(validationContext, e, current)
       case e: OpNE => checkEqualityLikeOperation(validationContext, e, current)
@@ -168,21 +175,25 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
       case e: OpDec => checkSingleOperandArithmeticOperation(validationContext, e, current)
       case e: OpInc => checkSingleOperandArithmeticOperation(validationContext, e, current)
 
-      case e: OpDivide => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ToCommonWidestType)
-      case e: OpMinus =>
-        checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ToCommonWidestType).orElse(
-          checkSingleOperandArithmeticOperation(validationContext, e, current)
-        )
-      case e: OpModulus => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ToCommonWidestType)
-      case e: OpMultiply => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ToCommonWidestType)
+      case e: OpDivide => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ForMathOperation)
+      case e: OpMinus => withTypedChildren {
+        case left :: right :: Nil if left.canBeSubclassOf(Typed[Number]) && right.canBeSubclassOf(Typed[Number]) => Valid(commonSupertypeFinder.commonSupertype(left, right)(NumberTypesPromotionStrategy.ForMathOperation))
+        case left :: right :: Nil => invalid(s"Operator '${e.getOperatorName}' used with mismatch types: ${left.display} and ${right.display}")
+        case left :: Nil if left.canBeSubclassOf(Typed[Number]) => Valid(left)
+        case left :: Nil => invalid(s"Operator '${e.getOperatorName}' used with non numeric type: ${left.display}")
+        case Nil => invalid("Empty minus")
+      }
+      case e: OpModulus => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ForMathOperation)
+      case e: OpMultiply => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ForMathOperation)
       case e: OperatorPower => checkTwoOperandsArithmeticOperation(validationContext, e, current)(NumberTypesPromotionStrategy.ForPowerOperation)
 
       case e: OpPlus => withTypedChildren {
         case left :: right :: Nil if left == Unknown || right == Unknown => Valid(Unknown)
         case left :: right :: Nil if left.canBeSubclassOf(Typed[String]) || right.canBeSubclassOf(Typed[String]) => Valid(Typed[String])
-        case left :: right :: Nil if left.canBeSubclassOf(Typed[Number]) && right.canBeSubclassOf(Typed[Number]) => Valid(commonSupertypeFinder.commonSupertype(left, right)(NumberTypesPromotionStrategy.ToCommonWidestType))
+        case left :: right :: Nil if left.canBeSubclassOf(Typed[Number]) && right.canBeSubclassOf(Typed[Number]) => Valid(commonSupertypeFinder.commonSupertype(left, right)(NumberTypesPromotionStrategy.ForMathOperation))
         case left :: right :: Nil => invalid(s"Operator '${e.getOperatorName}' used with mismatch types: ${left.display} and ${right.display}")
-        case left :: Nil => Valid(left)
+        case left :: Nil if left.canBeSubclassOf(Typed[Number]) => Valid(left)
+        case left :: Nil => invalid(s"Operator '${e.getOperatorName}' used with non numeric type: ${left.display}")
         case Nil => invalid("Empty plus")
       }
       case e: OperatorBetween => fixed(Typed[Boolean])
@@ -196,7 +207,7 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
         case Some(iterateType) =>
           val listType = extractListType(iterateType)
           typeChildren(validationContext, node, current.pushOnStack(listType)) {
-            case result :: Nil => Valid(TypedClass(classOf[java.util.List[_]], List(result)))
+            case result :: Nil => Valid(Typed.genericTypeClass[java.util.List[_]](List(result)))
             case other => invalid(s"Wrong selection type: ${other.map(_.display)}")
           }
       }
@@ -253,7 +264,7 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
   private def checkTwoOperandsArithmeticOperation(validationContext: ValidationContext, node: Operator, current: TypingContext)
                                                  (implicit numberPromotionStrategy: NumberTypesPromotionStrategy): ValidatedNel[ExpressionParseError, CollectedTypingResult] = {
     typeChildren(validationContext, node, current) {
-      case left :: right :: Nil if left.canBeSubclassOf(Typed[Number]) || right.canBeSubclassOf(Typed[Number]) => Valid(commonSupertypeFinder.commonSupertype(left, right))
+      case left :: right :: Nil if left.canBeSubclassOf(Typed[Number]) && right.canBeSubclassOf(Typed[Number]) => Valid(commonSupertypeFinder.commonSupertype(left, right))
       case left :: right :: Nil => invalid(s"Operator '${node.getOperatorName}' used with mismatch types: ${left.display} and ${right.display}")
       case _ => invalid(s"Bad '${node.getOperatorName}' operator construction") // shouldn't happen
     }
@@ -268,7 +279,6 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
   }
 
   private def extractProperty(e: PropertyOrFieldReference, t: TypingResult): ValidatedNel[ExpressionParseError, TypingResult] = t match {
-    case typed: TypingResult if typed.canHasAnyPropertyOrField => Valid(Unknown)
     case Unknown => Valid(Unknown)
     case s: SingleTypingResult =>
       extractSingleProperty(e)(s)
@@ -280,24 +290,29 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
         Valid(Typed(l.toSet))
   }
 
+  @tailrec
   private def extractSingleProperty(e: PropertyOrFieldReference)
-                                   (t: SingleTypingResult) = {
-    def extractClass(typedClass: TypedClass) = {
-      val clazzDefinition = EspTypeUtils.clazzDefinition(typedClass.klass)(ClassExtractionSettings.Default)
-      clazzDefinition.getPropertyOrFieldClazzRef(e.getName).map(Typed(_)).map(Valid(_)).getOrElse(invalid(s"There is no property '${e.getName}' in type: ${t.display}"))
-    }
+                                   (t: SingleTypingResult): ValidatedNel[ExpressionParseError, TypingResult]  = {
     t match {
-      case typed: SingleTypingResult if typed.canHasAnyPropertyOrField =>
-        Valid(Unknown)
-      case typedClass: TypedClass =>
-        extractClass(typedClass)
-      case typed: TypedObjectTypingResult =>
-        typed.fields.get(e.getName).map(Valid(_)).getOrElse(invalid(s"There is no property '${e.getName}' in type: ${t.display}"))
       case tagged: TypedTaggedValue =>
-        extractClass(tagged.objType)
+        extractSingleProperty(e)(tagged.objType)
+      case typedClass: TypedClass =>
+        propertyTypeBasedOnMethod(e)(typedClass).orElse(MapLikePropertyTyper.mapLikeValueType(typedClass))
+          .map(Valid(_))
+          .getOrElse(invalid(s"There is no property '${e.getName}' in type: ${t.display}"))
+      case TypedObjectTypingResult(fields, objType, _) =>
+        val typeBasedOnFields = fields.get(e.getName)
+        typeBasedOnFields.orElse(propertyTypeBasedOnMethod(e)(objType))
+          .map(Valid(_))
+          .getOrElse(invalid(s"There is no property '${e.getName}' in type: ${t.display}"))
       case dict: TypedDict =>
         dictTyper.typeDictValue(dict, e)
     }
+  }
+
+  private def propertyTypeBasedOnMethod(e: PropertyOrFieldReference)(typedClass: TypedClass) = {
+    val clazzDefinition = EspTypeUtils.clazzDefinition(typedClass.klass)
+    clazzDefinition.getPropertyOrFieldType(e.getName)
   }
 
   private def extractListType(parent: TypingResult): TypingResult = parent match {
@@ -335,7 +350,7 @@ private[spel] class Typer(classLoader: ClassLoader, commonSupertypeFinder: Commo
     Invalid(NonEmptyList.of(ExpressionParseError(message)))
 
   def withDictTyper(dictTyper: SpelDictTyper) =
-    new Typer(classLoader, commonSupertypeFinder, dictTyper)
+    new Typer(classLoader, commonSupertypeFinder, dictTyper, strictMethodsChecking = strictMethodsChecking)
 
 }
 
@@ -390,7 +405,7 @@ private[spel] object TypedNode {
 }
 
 private[spel] case class CollectedTypingResult(intermediateResults: Map[SpelNodeId, TypingResult], finalResult: TypingResult) {
-  def typingInfo: SpelExpressionTypingInfo = SpelExpressionTypingInfo(intermediateResults)
+  def typingInfo: SpelExpressionTypingInfo = SpelExpressionTypingInfo(intermediateResults, finalResult)
 }
 
 private[spel] object CollectedTypingResult {
@@ -404,4 +419,5 @@ private[spel] object CollectedTypingResult {
 
 }
 
-case class SpelExpressionTypingInfo(intermediateResults: Map[SpelNodeId, TypingResult]) extends ExpressionTypingInfo
+case class SpelExpressionTypingInfo(intermediateResults: Map[SpelNodeId, TypingResult],
+                                    typingResult: TypingResult) extends ExpressionTypingInfo

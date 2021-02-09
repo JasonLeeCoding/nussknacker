@@ -1,17 +1,18 @@
 package pl.touk.nussknacker.engine.util.service.query
 
 
-import com.typesafe.config.{Config, ConfigFactory}
-import org.scalatest.concurrent.ScalaFutures
+import com.typesafe.config.ConfigFactory
 import org.scalatest.{FunSuite, Matchers}
 import pl.touk.nussknacker.engine.api._
-import pl.touk.nussknacker.engine.api.process.WithCategories
-import pl.touk.nussknacker.engine.testing.{EmptyProcessConfigCreator, LocalModelData}
+import pl.touk.nussknacker.engine.api.process.{ProcessObjectDependencies, WithCategories}
+import pl.touk.nussknacker.engine.testing.LocalModelData
+import pl.touk.nussknacker.engine.util.process.EmptyProcessConfigCreator
 import pl.touk.nussknacker.engine.util.service.query.ServiceQuery.QueryResult
+import pl.touk.nussknacker.test.PatientScalaFutures
 
 import scala.concurrent.{ExecutionContext, Future}
 
-class ServiceQuerySpec extends FunSuite with Matchers with ScalaFutures {
+class ServiceQuerySpec extends FunSuite with Matchers with PatientScalaFutures {
 
   import QueryServiceTesting._
   import ServiceQuerySpec._
@@ -88,8 +89,8 @@ object QueryServiceTesting {
     def apply(serviceName:String,service:Service)
              (implicit executionContext: ExecutionContext): ServiceQuery = {
       new ServiceQuery(LocalModelData(ConfigFactory.empty, new EmptyProcessConfigCreator {
-        override def services(config: Config): Map[String, WithCategories[Service]] =
-          super.services(config) ++ Map(serviceName -> WithCategories(service))
+        override def services(processObjectDependencies: ProcessObjectDependencies): Map[String, WithCategories[Service]] =
+          super.services(processObjectDependencies) ++ Map(serviceName -> WithCategories(service))
       }))
     }
   }

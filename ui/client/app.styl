@@ -1,4 +1,5 @@
-@import "stylesheets/_variables.styl"
+@require "stylesheets/_variables.styl"
+@require "stylesheets/bootstrap.styl"
 
 html,
 body
@@ -6,25 +7,9 @@ body
   padding: 0
   width: 100%
   height: 100%
-  font-family: _fontFamily !important
   color: defaultTextColor
   font-size: defaultFontSize
   overflow: hidden
-
-.fade-enter
-  opacity: 0.01
-
-.fade-enter.fade-enter-active
-  opacity: 1
-  transition: opacity 300ms ease-in
-
-.fade-exit
-  opacity: 1
-
-.fade-exit.fade-exit-active
-  opacity: 0.01
-  transition: opacity 300ms ease-in
-
 
 #app-container
   position: absolute
@@ -72,16 +57,14 @@ ul.breadcrumbs-list
   display none
 
 processActivityList()
-  width 100%
   font-size 10px
-  float left
-  padding 10px 0 0 0
+  margin  15px 0
+  padding 0
   .header
-    display inline-block
     span
-      color #808080
+      color commentHeaderColor
       &.date
-        color panelTitleTextColor
+        color commentHeaderColor
         font-style italic
     p
       font-style italic
@@ -94,45 +77,56 @@ processActivityList()
     font-size 12px
 
 .process-comments
-  margin-bottom 10px
+  padding 0 13px
   .process-comments-list
     processActivityList()
     .header
-      width 90%
+      width 100%
       .remove
         float right
         &:hover
           cursor pointer
           opacity 0.5
-    .comment-under-line
-      width 90%
-      margin-left 0
-  .add-comment
+  .add-comment-panel
     font-size 12px
+    padding-bottom 10px
+    display flex
+    flex-direction column
     textarea
-      width 90%
-      height 45px
+      width 100%
+      height formControllHeight
       font-size 12px
-      font-weight lighter
-      border 1px solid commentBorderColor
+      font-weight 400
+      border-radius 3px
+      border none
       background-color commentBkgColor
-      padding 4px
+      padding 4px 6px
+      resize none
       &:focus
         outline-color: defaultTextColor
     button
-      margin-top 10px
+      font-size 12px
+      background-color #333
+      border none
+      width 20%
+      align-self flex-end
+      margin-top 5px
+      padding 3px 0
+      border-radius 3px
+      cursor pointer
+      &:hover
+        background-color #3d3d3d
 
 
 .process-attachments
-  cursor: default
-  margin-bottom 10px
+  cursor default
+  padding 0 13px
   display grid
   .process-attachments-list
     processActivityList()
 
     .attachment-section
-      display inline-flex
-      width 90%
+      display flex
       .attachment-details
         margin-left 8px
         word-break break-word
@@ -148,9 +142,9 @@ processActivityList()
 
   .add-attachments
     font-size 12px
-    width 90%
+    margin-bottom 15px
     height: 90px
-    border 1px solid buttonBorderColor
+    border none
     &:hover .attachment-drop-zone
       background-color lighten(#333, 5%)
     .attachments-container
@@ -176,12 +170,18 @@ processActivityList()
       text-align center
       margin-top -45px
     .attachment-button
+      border-radius 3px
       svg
-        margin-top 15px
-        width 27px
-        height 27px
+        margin-top 16px
+        width 22px
+        height 22px
 .label-info
   background-color labelBkgColor
+  padding 0 3px
+  margin: 0 4px;
+  color #ccc
+  font-weight 600
+  font-size 9px
 
 .typeSuggestion
   float: right
@@ -239,7 +239,7 @@ processActivityList()
   margin: 45px 50px
   width 360px
   min-width: 300px
-  height: 45px
+  height: formControllHeight
   background-color: buttonBlueBkgColor
   color: buttonBlueColor
   display flex
@@ -251,7 +251,7 @@ processActivityList()
   border-radius: 0
   &:hover
     color buttonBlueColor
-    background: processesHoverColor
+    background: lighten(buttonBlueBkgColor, 25%)
   &:focus
     color buttonBlueColor
   #add-icon

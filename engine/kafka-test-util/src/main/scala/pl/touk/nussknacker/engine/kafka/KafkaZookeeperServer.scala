@@ -6,14 +6,13 @@ import java.nio.file.Files
 import java.util.Properties
 
 import kafka.server.KafkaServer
-import org.apache.kafka.clients.consumer.KafkaConsumer
+import org.apache.kafka.clients.consumer.Consumer
 import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringSerializer}
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.server.{NIOServerCnxnFactory, ZooKeeperServer}
-import org.scalatest.concurrent.Eventually._
-import org.scalatest.time.{Millis, Seconds, Span}
+
+import scala.language.implicitConversions
 
 object KafkaZookeeperServer {
   val localhost = "127.0.0.1"
@@ -27,7 +26,7 @@ object KafkaZookeeperServer {
   private def runZookeeper(zkPort: Int): NIOServerCnxnFactory = {
     val factory = new NIOServerCnxnFactory()
     factory.configure(new InetSocketAddress(localhost, zkPort), 1024)
-    val zkServer = new ZooKeeperServer(tempDir(), tempDir(), 100)
+    val zkServer = new ZooKeeperServer(tempDir(), tempDir(), ZooKeeperServer.DEFAULT_TICK_TIME)
     factory.startup(zkServer)
     factory
   }
@@ -63,18 +62,20 @@ object KafkaZookeeperServer {
 }
 
 case class KafkaZookeeperServer(zooKeeperServer: NIOServerCnxnFactory, kafkaServer: KafkaServer, zkAddress: String, kafkaAddress: String) {
-  def shutdown() = {
+  def shutdown(): Unit = {
     kafkaServer.shutdown()
     zooKeeperServer.shutdown()
   }
 }
 
-object KafkaUtils {
+object KafkaZookeeperUtils {
 
   def createRawKafkaProducer(kafkaAddress: String, id: String): KafkaProducer[Array[Byte], Array[Byte]] = {
     val props: Properties = createCommonProducerProps(kafkaAddress, id)
     props.put("key.serializer", classOf[ByteArraySerializer].getName)
     props.put("value.serializer", classOf[ByteArraySerializer].getName)
+    props.put("retries", 3.toString)
+    props.put("acks", "all")
     new KafkaProducer(props)
   }
 
@@ -82,6 +83,8 @@ object KafkaUtils {
     val props: Properties = createCommonProducerProps(kafkaAddress, id)
     props.put("key.serializer", classOf[StringSerializer].getName)
     props.put("value.serializer", classOf[StringSerializer].getName)
+    props.put("retries", 3.toString)
+    props.put("acks", "all")
     new KafkaProducer(props)
   }
 
@@ -89,13 +92,13 @@ object KafkaUtils {
     val props = new Properties()
     props.put("bootstrap.servers", kafkaAddress)
     props.put("batch.size", "100000")
-    KafkaEspUtils.setClientId(props, id)
+    KafkaUtils.setClientId(props, id)
     props
   }
 
-  def createConsumerConnectorProperties(kafkaAddress: String, consumerTimeout: Long = 10000): Properties = {
+  def createConsumerConnectorProperties(kafkaAddress: String, consumerTimeout: Long = 10000, groupId: String = "testGroup"): Properties = {
     val props = new Properties()
-    props.put("group.id", "testGroup")
+    props.put("group.id", groupId)
     props.put("bootstrap.servers", kafkaAddress)
     props.put("auto.offset.reset", "earliest")
     props.put("consumer.timeout.ms", consumerTimeout.toString)
@@ -104,26 +107,6 @@ object KafkaUtils {
     props
   }
 
-  case class KeyMessage[K, V](k: K, msg: V) {
-    def message() = msg
-    def key() = k
-  }
-
-  implicit class RichConsumerConnector(consumer: KafkaConsumer[Array[Byte], Array[Byte]]) {
-    import scala.collection.JavaConverters._
-
-    def consume(topic: String, secondsToWait: Int = 10): Stream[KeyMessage[Array[Byte], Array[Byte]]] = {
-      implicit val patienceConfig: PatienceConfig = PatienceConfig(Span(secondsToWait, Seconds), Span(100, Millis))
-      val partitionsInfo = eventually {
-        consumer.listTopics.asScala.getOrElse(topic, throw new IllegalStateException(s"Topic: $topic not exists"))
-      }
-      val partitions = partitionsInfo.asScala.map(no => new TopicPartition(topic, no.partition()))
-      consumer.assign(partitions.asJava)
-
-      Stream.continually(())
-        .flatMap(_ => consumer.poll(1000).asScala.toStream)
-        .map(record => KeyMessage(record.key(), record.value()))
-    }
-  }
+  implicit def richConsumer[K, M](consumer: Consumer[K, M]): RichKafkaConsumer[K, M] = new RichKafkaConsumer(consumer)
 
 }

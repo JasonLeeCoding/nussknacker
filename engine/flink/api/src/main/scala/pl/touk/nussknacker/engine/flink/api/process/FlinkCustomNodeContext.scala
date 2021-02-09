@@ -1,16 +1,26 @@
 package pl.touk.nussknacker.engine.flink.api.process
 
-import pl.touk.nussknacker.engine.api.MetaData
+import org.apache.flink.api.common.functions.RuntimeContext
+import pl.touk.nussknacker.engine.api.context.ValidationContext
+import pl.touk.nussknacker.engine.api.{JobData, MetaData}
+import pl.touk.nussknacker.engine.flink.api.NkGlobalParameters
+import pl.touk.nussknacker.engine.flink.api.exception.FlinkEspExceptionHandler
 import pl.touk.nussknacker.engine.flink.api.signal.FlinkProcessSignalSender
 
 import scala.concurrent.duration.FiniteDuration
 import scala.reflect.ClassTag
 
-case class FlinkCustomNodeContext(metaData: MetaData,
+case class FlinkCustomNodeContext(jobData: JobData,
+                                  // TODO: it can be used in state recovery - make sure that it won't change during renaming of nodes on gui
                                   nodeId: String,
                                   timeout: FiniteDuration,
                                   lazyParameterHelper: FlinkLazyParameterFunctionHelper,
-                                  signalSenderProvider: FlinkProcessSignalSenderProvider)
+                                  signalSenderProvider: FlinkProcessSignalSenderProvider,
+                                  exceptionHandlerPreparer: RuntimeContext => FlinkEspExceptionHandler,
+                                  globalParameters: Option[NkGlobalParameters],
+                                  validationContext: Either[ValidationContext, Map[String, ValidationContext]]) {
+  def metaData: MetaData = jobData.metaData
+}
 
 case class SignalSenderKey(id: String, klass: Class[_])
 

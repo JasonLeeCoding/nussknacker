@@ -3,9 +3,145 @@ Project status
 Nussknacker is production ready - it's been used in major Polish telcom since beginning of 2017. However, it's still
 under active development, so some parts of the API may change in the future.
 
+For detailed instructions how to migrate to the newest version please see [migration guide](MigrationGuide.md).
 
 Nussknacker versions
 ====================
+
+0.4.0 (not released yet) 
+------------------------
+* More precise TypeInformation generation
+    * [#1338](https://github.com/TouK/nussknacker/pull/1338) Defining TypeInformation based on TypingResult
+    * [#1343](https://github.com/TouK/nussknacker/pull/1343) Aggregators compute stored types    
+    * [#1343](https://github.com/TouK/nussknacker/pull/1359) Improvements in variable output validation 
+    * [#1360](https://github.com/TouK/nussknacker/pull/1360) Service query can use global variables
+    * [#1375](https://github.com/TouK/nussknacker/pull/1375) Opt-in for new TypeInformation detection for inter operator serialization
+* [#1361](https://github.com/TouK/nussknacker/pull/1361) Lazy vars removal
+* [#1363](https://github.com/TouK/nussknacker/pull/1363) Open/close only services that are actually used in process
+* [#1367](https://github.com/TouK/nussknacker/pull/1367) Custom actions - first, experimental version
+* Migration of CI to github actions
+    * [#1368](https://github.com/TouK/nussknacker/pull/1368) Publish docker images/jars via GH actions (experimental)
+    * [#1381](https://github.com/TouK/nussknacker/pull/1381) Use GH Actions for coverage
+    * [#1383](https://github.com/TouK/nussknacker/pull/1383) Switch github badges
+* [#1382](https://github.com/TouK/nussknacker/pull/1382) First E2E FE tests                                                             
+* [#1373](https://github.com/TouK/nussknacker/pull/1373) Ability to load custom model config programmatically
+* [#1406](https://github.com/TouK/nussknacker/pull/1406) Eager services - ability to create service object using static parameters
+
+0.3.1 (not released yet) 
+------------------------
+* Performance fixes:
+    * [#1330](https://github.com/TouK/nussknacker/pull/1330) Multiple times parsing expressions in map/product LazyParameter
+    * [#1331](https://github.com/TouK/nussknacker/pull/1331) LoggingListener caches loggers
+    * [#1334](https://github.com/TouK/nussknacker/pull/1334) Type promotion cache
+    * [#1335](https://github.com/TouK/nussknacker/pull/1335) Omitting zeros for sum aggregate to avoid unnecessary buckets 
+    * [#1336](https://github.com/TouK/nussknacker/pull/1336) Aggregation metrics
+* [#1321](https://github.com/TouK/nussknacker/pull/1321) Exception handler accessible via custom node context, avro record encoding errors reported by exception handler
+
+0.3.0 
+------------------------
+* [#1298](https://github.com/TouK/nussknacker/pull/1298) Feature flag `avroKryoGenericRecordSchemaIdSerialization` for avro kryo serialization optimization (default = false)
+* [#1315](https://github.com/TouK/nussknacker/pull/1315) Spring bumped 5.1.4 -> 5.1.19
+* [#1312](https://github.com/TouK/nussknacker/pull/1312) Ficus bumped 1.4.1 -> 1.4.7
+* [#1288](https://github.com/TouK/nussknacker/pull/1288) Namespaces can be configured for ObjectNaming
+* [#1261](https://github.com/TouK/nussknacker/pull/1261) Fix: Access to `map.missingKey` caused `Property or field cannot be found on object`
+* [#1244](https://github.com/TouK/nussknacker/pull/1244) Ability to define `variablesToHide` in `Parameter`
+* [#1165](https://github.com/TouK/nussknacker/pull/1165) Typed global variables
+* [#1128](https://github.com/TouK/nussknacker/pull/1128) Union-memo transformer
+* [#1054](https://github.com/TouK/nussknacker/pull/1054) Tabbed dark process list
+* Configuration improvements (library upgrade, conventions): 
+  [#1151](https://github.com/TouK/nussknacker/pull/1151), 
+  [#1166](https://github.com/TouK/nussknacker/pull/1166) 
+* [#873](https://github.com/TouK/nussknacker/pull/873), [#1044](https://github.com/TouK/nussknacker/pull/1044) Flink upgrade (to 1.11) 
+* More graceful handling of Flink compatibility issues (in particular, ```FlinkCompatibilityProvider`` trait introduced, also
+ProcessManager implementations are separated from UI to allow easier changes in deployments):
+  [#1150](https://github.com/TouK/nussknacker/pull/1150),
+  [#1218](https://github.com/TouK/nussknacker/pull/1218) 
+* [#1183](https://github.com/TouK/nussknacker/pull/1183) New back to process button on metrics 
+* [#1188](https://github.com/TouK/nussknacker/pull/1188) Fix env label and provide nussknacker logo
+* [#249](https://github.com/TouK/nussknacker/pull/1201) Inferred expression type in node modal
+* [#1255](https://github.com/TouK/nussknacker/pull/1255) Moved displaying `Metrics tab` to `customTabs`
+* [#1257](https://github.com/TouK/nussknacker/pull/1257) Improvements: Flink test util package
+* [#1287](https://github.com/TouK/nussknacker/pull/1287) OAuth2: add accessTokenRequestContentType parameter
+* [#1290](https://github.com/TouK/nussknacker/pull/1290) Own kryo serializers can be provided through SPI
+* [#1303](https://github.com/TouK/nussknacker/pull/1303) TypedObjectTypingResult can have additional info (e.g. Schema for GenericRecord)
+
+0.2.2
+-----------------------
+* [#1175](https://github.com/TouK/nussknacker/pull/1175) Fix for: BestEffortAvroEncoder haven't produced record with logical types for missing field with default values
+* [#1173](https://github.com/TouK/nussknacker/pull/1173) Fix for: Avro source wasn't be able to read record with schema with invalid defaults
+
+0.2.1
+-----------------------
+* [#1127](https://github.com/TouK/nussknacker/pull/1127) Fix too small count values
+* [#1133](https://github.com/TouK/nussknacker/pull/1133) Improvements: More flexible TestReporter instancies implementation 
+* [#1131](https://github.com/TouK/nussknacker/pull/1131) Fix: Disable "deploy" & "metrics" buttons for subprocess  
+* [#1148](https://github.com/TouK/nussknacker/pull/1148) Fix FE regexp for match node id
+
+0.2.0
+------------------------
+* [#1099](https://github.com/TouK/nussknacker/pull/1099) New outer-join node
+* [#1024](https://github.com/TouK/nussknacker/pull/1024) Added default async interpretation value configured by `asyncExecutionConfig.defaultUseAsyncInterpretation` (false if missing).
+* [#879](https://github.com/TouK/nussknacker/pull/879) Metrics can now use Flink variables for better reporting, it's recommended to use InfluxDB native protocol instead of legacy Graphite protocol to send metrics to InfluxDB.
+* [#940](https://github.com/TouK/nussknacker/pull/940) More detailed node errors 
+* [#949](https://github.com/TouK/nussknacker/pull/949) JVM options can be configured via JDK_JAVA_OPTIONS env variable (in docker and standalone distribution) 
+* [#954](https://github.com/TouK/nussknacker/pull/954) Correct handling of types in empty inline lists 
+* [#944](https://github.com/TouK/nussknacker/pull/903) System cache mechanism
+* [#704](https://github.com/TouK/nussknacker/pull/704) Preloaded creator panel node icons
+* [#943](https://github.com/TouK/nussknacker/pull/943) Literal min / max validators
+* [#976](https://github.com/TouK/nussknacker/pull/976) Fixed save button & groups expand for businessView
+* [#973](https://github.com/TouK/nussknacker/pull/973) Textarea editor
+* [#987](https://github.com/TouK/nussknacker/pull/987) Optimized graph rendering time, fixed minor bugs (expand group icon, view center & fit after layout).
+* Introduction to KafkaAvro API: 
+    [#871](https://github.com/TouK/nussknacker/pull/871), 
+    [#881](https://github.com/TouK/nussknacker/pull/881), 
+    [#903](https://github.com/TouK/nussknacker/pull/903),
+    [#981](https://github.com/TouK/nussknacker/pull/981), 
+    [#989](https://github.com/TouK/nussknacker/pull/989), 
+    [#998](https://github.com/TouK/nussknacker/pull/998), 
+    [#1007](https://github.com/TouK/nussknacker/pull/1007), 
+    [#1014](https://github.com/TouK/nussknacker/pull/1014),
+    [#1041](https://github.com/TouK/nussknacker/pull/1041),
+* Performance improvements in interpreter: [#1008](https://github.com/TouK/nussknacker/pull/1008),
+ [#1013](https://github.com/TouK/nussknacker/pull/1013). The second one also removes Future[] from expression evaluation 
+* Dynamic parameters: filter validation, GenericNodeTransformation introduction (for CustomNodes, Sources, Sinks) - also handling dynamic parameters on UI: 
+    [#978](https://github.com/TouK/nussknacker/pull/978), 
+    [#996](https://github.com/TouK/nussknacker/pull/996), 
+    [#1001](https://github.com/TouK/nussknacker/pull/1001),
+    [#1011](https://github.com/TouK/nussknacker/pull/1011)
+* [#988](https://github.com/TouK/nussknacker/pull/988) Json editor
+* [#1066](https://github.com/TouK/nussknacker/pull/1066) Duration and period editors fixes
+* [#1126](https://github.com/TouK/nussknacker/pull/1126) New nodes: periodic source, delay and dead-end
+
+0.1.2
+------------------------
+* [#965](https://github.com/TouK/nussknacker/pull/965) Added new, 'aggregate-tumbling' node.
+* [#957](https://github.com/TouK/nussknacker/pull/957) Custom node `aggregate` has now additional aggregation function `Sum`.
+ Also was changed parameter from `windowLengthInSeconds` to `windowLength` with human friendly duration input.
+
+0.1.1
+------------
+* Branch parameters now can be eager (computed during process compilation)
+* More restrictive type checking in SpEL - mainly added verification of types of method's paramaters
+* Added support for Kafka consumer group strategies - setted up by `kafka.consumerGroupNamingStrategy` configuraton option
+* Bugfixes for joins
+
+0.1.0
+-------------
+* Added support for explicitly setting uids in operators - turned on by `explicitUidInStatefulOperators` model's flag.
+By default setted up to false.
+* Old way of configuring Flink and model (via `flinkConfig` and `processConfig`) is removed. `processTypes` 
+configuration should be used from now on.
+* Change of additional properties configuration
+
+0.0.12 (26 Oct 2019)
+--------------------
+* Cross builds with Scala 2.11 and 2.12
+* First version of join nodes
+* OAuth2 authentication capabilities
+* Migration of Argonaut to Circe
+* Preliminary version of dictionaries in expressions
+* Major upgrade of frontend libraries (React, Redux, etc)
+* Various usability improvements
 
 0.0.11 (1 Apr 2019)
 ---------
@@ -18,40 +154,40 @@ Nussknacker versions
 
 0.0.8 (7 May 2018)
 ---------
-- [ITDEVESP-389] expressions code syntax highlighting
+- expressions code syntax highlighting
 - source/sink params as expressions
-- [ITDEVESP-389] multiline expression suggestions
-- [ITDEVESP-413] method signature and documentation in code suggestions
+- multiline expression suggestions
+- method signature and documentation in code suggestions
 - inject new node after dragging on edge
 - Query services tab in UI
 - subprocess disabling
-- [ITDEVESP-417] display http request-response for query service tab
+- display http request-response for query service tab
 - flink kafka 0.11 connector
-- [ITDEVESP-452] - dynamic source return type
-- [ITDEVESP-458] SQL can be used as expression language
+- dynamic source return type
+- SQL can be used as expression language
 - Processes page rendering optimized
-- [ITDEVESP-421] - suggestions for projections/selections in spel
+- suggestions for projections/selections in spel
 - upgrade to flink 1.4.2
 - upgrade to scala 2.11.12
-- [ITDEVESP-513] Make sinks disableable
+- Make sinks disableable
 
 0.0.7 (22 Dec 2017)
 ---------
 - global imports in expressions
-- [ITDEVESP-298] - deployment standalone on multiple nodes
+- deployment standalone on multiple nodes
 - typed SpEL expressions - first iteration
-- [ITDEVESP-298] - can post process standalone results
+- can post process standalone results
 - support for java services
-- [ITDEVESP-298] - handling get requests in standalone mode
-- [ITDEVESP-298] - metric fixes for standalone
+- handling get requests in standalone mode
+- metric fixes for standalone
 - compare with other env
-- [ITDEVESP-295] - split in request/response mode by expression
+- split in request/response mode by expression
 - ProcessConfigCreator Java API support added
-- [ITDEVESP-278] extendable authentication
+- extendable authentication
 - comparing environments - first part, can compare processes
-- [ITDEVESP-280] subprocess versions
+- subprocess versions
 - process migrations + some refactoring
-- [ITDEVESP-117] - async execution with toggle
+- async execution with toggle
 - better exception for errors in service invocations
 - nussknacker java api
 - spring version bump because of SPR-9194
@@ -68,10 +204,11 @@ Table below contains versions of libraries/apps that can be used with Nussknacke
 
 |Nussknacker| Flink | Kafka  | InfluxDB | Grafana |
 |-----------|-------|--------|----------|---------|
-| master    |**1.7.2**|0.11.0.2| ?    | ?   |
-| 0.0.11    |1.6.1  |0.11.0.2| ?    | ?   |
-| 0.0.10    |**1.6.1**  |0.11.0.2| ?    | ?   |
-| 0.0.9     |1.4.2  |0.11.0.2| ?        | ?       |
+| master    |**1.7.2**|0.11.0.2|1.2.0     | 5.4.0   |
+| 0.0.12    |1.7.2  |0.11.0.2| 1.2.0    | 5.4.0   |
+| 0.0.11    |1.6.1  |0.11.0.2| 1.2.0   | 5.4.0  |
+| 0.0.10    |**1.6.1**  |0.11.0.2| 1.2.0    | 5.4.0   |
+| 0.0.9     |1.4.2  |0.11.0.2| 1.2.0        | 5.4.0       |
 | 0.0.8     |1.4.2  |0.11.0.2| 1.2.0    | 4.0.1   |
 | 0.0.7     |1.3.1  |0.9.0.1 | 1.2.0    | 4.0.1   |
 | 0.0.6     |1.3.1  |0.9.0.1 | 1.2.0    | 4.0.1   |

@@ -1,20 +1,20 @@
 package pl.touk.nussknacker.engine.management.javasample
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.streaming.api.functions.TimestampAssigner
 import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.scala._
 import pl.touk.nussknacker.engine.api.exception.ExceptionHandlerFactory
 import pl.touk.nussknacker.engine.api.process.{SinkFactory, SourceFactory, WithCategories}
-import pl.touk.nussknacker.engine.flink.api.process.{FlinkSource, FlinkSourceFactory}
+import pl.touk.nussknacker.engine.flink.api.process.{BasicFlinkSource, FlinkSourceFactory}
+import pl.touk.nussknacker.engine.flink.api.timestampwatermark.TimestampWatermarkHandler
 import pl.touk.nussknacker.engine.flink.util.exception.BrieflyLoggingExceptionHandler
 import pl.touk.nussknacker.engine.flink.util.sink.EmptySink
 
 class Objects extends Serializable {
 
-  def source : WithCategories[SourceFactory[_]] = WithCategories(FlinkSourceFactory.noParam(new FlinkSource[Model] {
+  def source : WithCategories[SourceFactory[_]] = WithCategories(FlinkSourceFactory.noParam(new BasicFlinkSource[Model] {
 
-    override def toFlinkSource: SourceFunction[Model] = new SourceFunction[Model] {
+    override def flinkSourceFunction: SourceFunction[Model] = new SourceFunction[Model] {
 
       override def cancel(): Unit = {}
 
@@ -25,9 +25,9 @@ class Objects extends Serializable {
       }
     }
 
-    override def typeInformation: TypeInformation[Model] = implicitly[TypeInformation[Model]]
+    override val typeInformation: TypeInformation[Model] = implicitly[TypeInformation[Model]]
 
-    override def timestampAssigner: Option[TimestampAssigner[Model]] = None
+    override def timestampAssigner: Option[TimestampWatermarkHandler[Model]] = None
   }))
 
   def sink = WithCategories(SinkFactory.noParam(EmptySink))

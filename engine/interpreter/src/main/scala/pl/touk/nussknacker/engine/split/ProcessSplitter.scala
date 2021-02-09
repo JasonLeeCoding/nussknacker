@@ -7,6 +7,7 @@ import pl.touk.nussknacker.engine.splittedgraph.end.{DeadEnd, End, NormalEnd}
 import pl.touk.nussknacker.engine.splittedgraph.part._
 import pl.touk.nussknacker.engine.splittedgraph.splittednode.{NextNode, PartRef}
 
+//NOTE: logic of splitter should match logic in SplittedNodesCollector
 object ProcessSplitter {
 
   def split(process: EspProcess): SplittedProcess = {
@@ -22,6 +23,11 @@ object ProcessSplitter {
     val nextWithParts = traverse(next)
     val node = splittednode.OneOutputSubsequentNode(custom, nextWithParts.next)
     CustomNodePart(node, nextWithParts.nextParts, nextWithParts.ends)
+  }
+
+  private def split(custom: CustomNode): CustomNodePart = {
+    val node = splittednode.EndingNode(custom)
+    CustomNodePart(node, List.empty, List.empty)
   }
 
   private def split(sink: Sink): SinkPart = {
@@ -80,6 +86,9 @@ object ProcessSplitter {
       case EndingNode(sink: Sink) =>
         val part = split(sink)
         NextWithParts(PartRef(sink.id), List(part), List.empty)
+      case EndingNode(endingCustomNode: CustomNode) =>
+        val part = split(endingCustomNode)
+        NextWithParts(PartRef(part.id), List(part), List.empty)        
       case EndingNode(other) =>
         NextWithParts(NextNode(splittednode.EndingNode(other)), List.empty, List(NormalEnd(other.id)))
       case BranchEnd(branchEndData) =>

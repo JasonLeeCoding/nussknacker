@@ -1,6 +1,5 @@
 package pl.touk.nussknacker.ui.process.repository
 
-import java.sql.Timestamp
 import java.time.LocalDateTime
 
 import cats.data._
@@ -11,20 +10,20 @@ import pl.touk.nussknacker.engine.ModelData
 import pl.touk.nussknacker.engine.api.deployment.{CustomProcess, GraphProcess, ProcessDeploymentData}
 import pl.touk.nussknacker.ui.EspError
 import pl.touk.nussknacker.ui.EspError._
-import pl.touk.nussknacker.ui.db.{DbConfig, EspTables}
-import pl.touk.nussknacker.ui.db.entity.{CommentActions, CommentEntityFactory, ProcessEntityData, ProcessVersionEntityData}
+import pl.touk.nussknacker.ui.db.DbConfig
+import pl.touk.nussknacker.ui.db.entity.{CommentActions, ProcessEntityData, ProcessVersionEntityData}
 import pl.touk.nussknacker.engine.ProcessingTypeData.ProcessingType
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.restmodel.ProcessType
 import pl.touk.nussknacker.ui.process.marshall.ProcessConverter
 import pl.touk.nussknacker.restmodel.process.ProcessId
 import pl.touk.nussknacker.restmodel.processdetails.ProcessShapeFetchStrategy
+import pl.touk.nussknacker.ui.process.processingtypedata.ProcessingTypeDataProvider
 import pl.touk.nussknacker.ui.process.repository.ProcessRepository._
 import pl.touk.nussknacker.ui.process.repository.WriteProcessRepository.UpdateProcessAction
 import pl.touk.nussknacker.ui.security.api.LoggedUser
 import pl.touk.nussknacker.ui.util.DateUtils
 import slick.dbio.DBIOAction
-import slick.jdbc.JdbcProfile
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -32,7 +31,7 @@ import scala.language.higherKinds
 
 object WriteProcessRepository {
 
-  def create(dbConfig: DbConfig, modelData: Map[ProcessingType, ModelData]): WriteProcessRepository =
+  def create(dbConfig: DbConfig, modelData: ProcessingTypeDataProvider[ModelData]): WriteProcessRepository =
 
     new DbWriteProcessRepository[Future](dbConfig, modelData.mapValues(_.migrations.version)) with WriteProcessRepository with BasicRepository
 
@@ -58,7 +57,7 @@ trait WriteProcessRepository {
 }
 
 abstract class DbWriteProcessRepository[F[_]](val dbConfig: DbConfig,
-                                              val modelVersion: Map[ProcessingType, Int])
+                                              val modelVersion: ProcessingTypeDataProvider[Int])
   extends LazyLogging with ProcessRepository[F] with CommentActions {
 
   import profile.api._
@@ -66,14 +65,16 @@ abstract class DbWriteProcessRepository[F[_]](val dbConfig: DbConfig,
   def saveNewProcess(processName: ProcessName, category: String, processDeploymentData: ProcessDeploymentData,
                      processingType: ProcessingType, isSubprocess: Boolean)
                     (implicit loggedUser: LoggedUser): F[XError[Option[ProcessVersionEntityData]]] = {
-    val processToSave = ProcessEntityData(id = -1L, name = processName.value, processCategory = category,
+    val processToSave = ProcessEntityData(
+      id = -1L, name = processName.value, processCategory = category,
       description = None, processType = ProcessType.fromDeploymentData(processDeploymentData),
-      processingType = processingType, isSubprocess = isSubprocess, isArchived = false)
+      processingType = processingType, isSubprocess = isSubprocess, isArchived = false,
+      createdAt = DateUtils.toTimestamp(now), createdBy = loggedUser.username)
 
     val insertNew = processesTable.returning(processesTable.map(_.id)).into { case (entity, newId) => entity.copy(id = newId) }
 
     val insertAction = logDebug(s"Saving process ${processName.value} by user $loggedUser").flatMap { _ =>
-      latestProcessVersionsNoJson(processName).result.headOption.flatMap {
+      latestProcessVersionsNoJsonQuery(processName).result.headOption.flatMap {
         case Some(_) => DBIOAction.successful(ProcessAlreadyExists(processName.value).asLeft)
         case None => processesTable.filter(_.name === processName.value).result.headOption.flatMap {
           case Some(_) => DBIOAction.successful(ProcessAlreadyExists(processName.value).asLeft)
@@ -107,7 +108,7 @@ abstract class DbWriteProcessRepository[F[_]](val dbConfig: DbConfig,
       case Some(version) if version.json == maybeJson && version.mainClass == maybeMainClass => None
       case _ => Option(ProcessVersionEntityData(id = processesVersionCount + 1, processId = processId.value,
         json = maybeJson, mainClass = maybeMainClass, createDate = DateUtils.toTimestamp(now),
-        user = loggedUser.id, modelVersion = modelVersion.get(processingType)))
+        user = loggedUser.username, modelVersion = modelVersion.forType(processingType)))
     }
 
     //TODO: why EitherT.right doesn't infere properly here?
@@ -119,7 +120,7 @@ abstract class DbWriteProcessRepository[F[_]](val dbConfig: DbConfig,
       process <- EitherT.fromEither[DB](Either.fromOption(maybeProcess, ProcessNotFoundError(processId.value.toString)))
       _ <- EitherT.fromEither(Either.cond(process.processType == ProcessType.fromDeploymentData(processDeploymentData), (), InvalidProcessTypeError(processId.value.toString)))
       processesVersionCount <- rightT(processVersionsTableNoJson.filter(p => p.processId === processId.value).length.result)
-      latestProcessVersion <- rightT(latestProcessVersions(processId)(ProcessShapeFetchStrategy.FetchDisplayable).result.headOption)
+      latestProcessVersion <- rightT(fetchProcessLatestVersionsQuery(processId)(ProcessShapeFetchStrategy.FetchDisplayable).result.headOption)
       newProcessVersion <- EitherT.fromEither(Right(versionToInsert(latestProcessVersion, processesVersionCount, process.processingType)))
       _ <- EitherT.right[EspError](newProcessVersion.map(processVersionsTable += _).getOrElse(dbMonad.pure(0)))
     } yield newProcessVersion

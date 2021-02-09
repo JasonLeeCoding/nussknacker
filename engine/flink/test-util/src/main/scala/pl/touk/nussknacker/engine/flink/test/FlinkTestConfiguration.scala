@@ -1,6 +1,6 @@
 package pl.touk.nussknacker.engine.flink.test
 
-import org.apache.flink.configuration.{Configuration, QueryableStateOptions}
+import org.apache.flink.configuration._
 
 object FlinkTestConfiguration {
 //FIXME: make ports range dynamic and smaller.
@@ -11,7 +11,15 @@ object FlinkTestConfiguration {
   private val QueryStateProxyPortHigh = 9469
 
   // better to create each time because is mutable
-  def configuration: Configuration = addQueryableStatePortRanges(new Configuration)
+  def configuration(taskManagersCount: Int = 2, taskSlotsCount: Int = 8): Configuration = {
+    val config = new Configuration
+    config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, taskManagersCount)
+    config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, taskSlotsCount)
+    // to prevent OutOfMemoryError: Could not allocate enough memory segments for NetworkBufferPool on low memory env (like Travis)
+    config.set(TaskManagerOptions.NETWORK_MEMORY_MIN, MemorySize.parse("16m"))
+    config.set(TaskManagerOptions.NETWORK_MEMORY_MAX, MemorySize.parse("16m"))
+    addQueryableStatePortRanges(config)
+  }
 
   def setQueryableStatePortRangesBySystemProperties(): Unit = {
     System.setProperty(QueryableStateOptions.SERVER_PORT_RANGE.key(), s"$QueryStateServerPortLow-$QueryStateServerPortHigh")

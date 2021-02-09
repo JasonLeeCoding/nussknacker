@@ -6,15 +6,13 @@ import cats.data.Validated._
 import cats.data._
 import pl.touk.nussknacker.engine.api.Context
 import pl.touk.nussknacker.engine.api.context.ValidationContext
-import pl.touk.nussknacker.engine.api.expression.{Expression, ExpressionParseError, ExpressionParser, ExpressionTypingInfo, TypedExpression, ValueWithLazyContext}
-import pl.touk.nussknacker.engine.api.lazyy.LazyValuesProvider
-import pl.touk.nussknacker.engine.api.typed.typing.{Typed, TypedClass, TypingResult}
-import pl.touk.nussknacker.engine.api.typed.{ClazzRef, TypedMap, typing}
+import pl.touk.nussknacker.engine.api.expression._
+import pl.touk.nussknacker.engine.api.typed.TypedMap
+import pl.touk.nussknacker.engine.api.typed.typing.{Typed, TypingResult}
 import pl.touk.nussknacker.engine.sql.columnmodel.CreateColumnModel
-import pl.touk.nussknacker.engine.sql.preparevalues.{PrepareTables, ReadObjectField}
+import pl.touk.nussknacker.engine.sql.preparevalues.PrepareTables
 
 import scala.collection.JavaConverters._
-import scala.concurrent.Future
 
 object SqlExpressionParser extends ExpressionParser {
 
@@ -46,8 +44,8 @@ object SqlExpressionParser extends ExpressionParser {
                                typingResult: TypingResult): TypedExpression = {
 
     val expression = new SqlExpression(original = original, columnModels = colModel)
-    val listResult = TypedClass(classOf[List[_]], List(typingResult))
-    TypedExpression(expression, listResult, SqlExpressionTypingInfo)
+    val listResult = Typed.genericTypeClass[List[_]](List(typingResult))
+    TypedExpression(expression, listResult, SqlExpressionTypingInfo(typingResult))
   }
 
   private def getQueryReturnType(original: String, colModel: Map[String, ColumnModel]): Validated[NonEmptyList[ExpressionParseError], TypingResult] = {
@@ -62,7 +60,7 @@ object SqlExpressionParser extends ExpressionParser {
     }
   }
 
-  override def parseWithoutContextValidation(original: String): Validated[NonEmptyList[ExpressionParseError], Expression] =
+  override def parseWithoutContextValidation(original: String, expectedType: TypingResult): Validated[NonEmptyList[ExpressionParseError], Expression] =
     throw new IllegalStateException("shouldn't be used")
 
 }
@@ -100,24 +98,21 @@ class SqlExpression(private[sql] val columnModels: Map[String, ColumnModel],
     new HsqlSqlQueryableDataBase(original, columnModels)
   }
 
-  override def evaluate[T](ctx: Context, lazyValuesProvider: LazyValuesProvider): Future[ValueWithLazyContext[T]] = {
-    Future.successful {
-      val result = evaluate(ctx).asJava.asInstanceOf[T]
-      ValueWithLazyContext(result, ctx.lazyContext)
-    }
+  override def evaluate[T](ctx: Context, globals: Map[String, Any]): T = {
+    //TODO: optimize if needed
+    evaluate(ctx.variables ++ globals).asJava.asInstanceOf[T]
   }
 
-  private def evaluate[T](ctx: Context): List[TypedMap] = {
+  private def evaluate[T](variables: Map[String, Any]): List[TypedMap] = {
     val db = databaseHolder.get()
-    PrepareTables(ctx.variables, columnModels)
+    PrepareTables(variables, columnModels)
       .map(db.query)
       .valueOr(error => throw SqlExpressEvaluationException(error))
   }
 
 }
 
-// empty for now
-case object SqlExpressionTypingInfo extends ExpressionTypingInfo
+case class SqlExpressionTypingInfo(typingResult: TypingResult) extends ExpressionTypingInfo
 
 case class Table(model: ColumnModel, rows: List[List[Any]])
 

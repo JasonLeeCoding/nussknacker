@@ -4,10 +4,11 @@ import java.util.Date
 
 import org.scalatest.{FunSuite, Matchers}
 import pl.touk.nussknacker.engine.build.{EspProcessBuilder, GraphBuilder}
-import pl.touk.nussknacker.engine.process.ProcessTestHelpers.{MockService, SimpleRecord, SimpleRecordWithPreviousValue, processInvoker}
+import pl.touk.nussknacker.engine.process.helpers.ProcessTestHelpers
+import pl.touk.nussknacker.engine.process.helpers.SampleNodes._
 import pl.touk.nussknacker.engine.spel
 
-class CustomNodeProcessSpec extends FunSuite with Matchers {
+class CustomNodeProcessSpec extends FunSuite with Matchers with ProcessTestHelpers {
 
   import spel.Implicits._
 
@@ -25,8 +26,27 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
     val data = List(SimpleRecord("1", 3, "a", new Date(0)))
 
     //without certain hack (see SpelHack & SpelMapHack) this throws exception.
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
+  }
+
+  test("be able to use maps, lists and output var after optional ending custom nodes") {
+    val process = EspProcessBuilder.id("proc1")
+      .exceptionHandler()
+      .source("id", "input")
+      .buildSimpleVariable("map", "map", "{:}")
+      .buildSimpleVariable("list", "list", "{}")
+      .buildSimpleVariable("str", "strVar", "'someStr'")
+      .customNode("custom", "outRec", "optionalEndingCustom", "param" -> "#strVar")
+      .buildSimpleVariable("mapToString", "mapToString", "#map.toString()")
+      .buildSimpleVariable("listToString", "listToString", "#list.toString()")
+      .buildSimpleVariable("outputVarToString", "outRecToString", "#outRec.toString()")
+      .emptySink("out", "monitor")
+
+    val data = List(SimpleRecord("1", 3, "a", new Date(0)))
+
+    //without certain hack (see SpelHack & SpelMapHack) this throws exception.
+    processInvoker.invokeWithSampleData(process, data)
   }
 
   test("fire alert when aggregate threshold exceeded") {
@@ -48,7 +68,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     )
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     val mockData = MockService.data.map(_.asInstanceOf[SimpleRecordWithPreviousValue])
     mockData.map(_.record.value1) shouldBe List(12L, 20L)
@@ -81,7 +101,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     )
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     val mockData = MockService.data.map(_.asInstanceOf[SimpleRecordWithPreviousValue])
     mockData.map(_.record.value1) shouldBe List(12L, 20L)
@@ -99,7 +119,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     val data = List(SimpleRecord("1", 3, "a", new Date(0)))
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data.size shouldBe 1
   }
@@ -129,7 +149,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     )
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     val (allMocked, filteredMocked) = MockService.data.map(_.asInstanceOf[String]).partition(_.startsWith("allRec-"))
     allMocked shouldBe List("allRec-3", "allRec-5", "allRec-12", "allRec-14", "allRec-20")
@@ -151,7 +171,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
       SimpleRecord("1", 3, "a", new Date(0))
     )
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data shouldBe 'empty
 
@@ -171,7 +191,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
       SimpleRecord("1", 3, "a", new Date(0))
     )
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     val all = MockService.data.toSet
     all shouldBe Set("f1-alamakota", "f2-alamakota")
@@ -188,7 +208,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
       .processorEnd("proc2", "logService", "all" -> "#beforeNode")
 
     val data = List(SimpleRecord("1", 3, "a", new Date(0)))
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data shouldBe List("testBeforeNode")
 
@@ -204,7 +224,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     val data = List(SimpleRecord("terefere", 3, "a", new Date(0)), SimpleRecord("kuku", 3, "b", new Date(0)))
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data shouldBe List("terefere")
 
@@ -220,7 +240,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     val data = List(SimpleRecord("terefere", 3, "a", new Date(0)), SimpleRecord("kuku", 3, "b", new Date(0)))
 
-    processInvoker.invoke(process, data)
+    processInvoker.invokeWithSampleData(process, data)
 
     MockService.data shouldBe List("terefere")
   }
@@ -234,7 +254,7 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
 
     val data = List()
 
-    val thrown = the [IllegalArgumentException] thrownBy processInvoker.invoke(process, data)
+    val thrown = the [IllegalArgumentException] thrownBy processInvoker.invokeWithSampleData(process, data)
 
     thrown.getMessage shouldBe "Compilation errors: ExpressionParseError(Unresolved reference 'input',proc2,Some(all),#input.id)"
   }
@@ -248,9 +268,41 @@ class CustomNodeProcessSpec extends FunSuite with Matchers {
       .processor("proc2", "logService", "all" -> "#outRec")
       .emptySink("out", "monitor")
 
-    val thrown = the [IllegalArgumentException] thrownBy processInvoker.invoke(process, List.empty)
+    val thrown = the [IllegalArgumentException] thrownBy processInvoker.invokeWithSampleData(process, List.empty)
 
-    thrown.getMessage shouldBe "Compilation errors: ExpressionParseError(There is no property 'value999' in type: pl.touk.nussknacker.engine.process.ProcessTestHelpers$SimpleRecord,delta,Some($expression),#outRec.record.value999 > #outRec.previous + 5)"
+    thrown.getMessage shouldBe s"Compilation errors: ExpressionParseError(There is no property 'value999' in type: SimpleRecord,delta,Some($$expression),#outRec.record.value999 > #outRec.previous + 5)"
   }
+
+
+  test("should evaluate blank expression used in lazy parameter as a null") {
+    val process = EspProcessBuilder.id("proc1")
+      .exceptionHandler()
+      .source("id", "input")
+      .customNode("id1", "output", "transformWithNullable", "param" -> "")
+      .processor("proc2", "logService", "all" -> "#output")
+      .emptySink("out", "monitor")
+
+    val data = List(SimpleRecord("1", 3, "a", new Date(0)))
+
+    processInvoker.invokeWithSampleData(process, data)
+
+    MockService.data shouldBe List(null)
+  }
+
+  test("be able to end process with optional ending custom node") {
+    val process = EspProcessBuilder.id("proc1")
+      .exceptionHandler()
+      .source("id", "input")
+      .buildSimpleVariable("map", "map", "{:}")
+      .buildSimpleVariable("list", "list", "{}")
+      .endingCustomNode("custom", None, "optionalEndingCustom", "param" -> "#input.id")
+
+    val data = List(SimpleRecord("1", 3, "a", new Date(0)))
+
+    //without certain hack (see SpelHack & SpelMapHack) this throws exception.
+    processInvoker.invokeWithSampleData(process, data)
+    MockService.data shouldBe List("1")
+  }
+
 
 }

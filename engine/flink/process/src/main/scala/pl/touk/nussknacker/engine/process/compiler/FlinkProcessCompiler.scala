@@ -3,9 +3,11 @@ package pl.touk.nussknacker.engine.process.compiler
 import cats.data.Validated.{Invalid, Valid}
 import cats.data.ValidatedNel
 import com.typesafe.config.Config
+import pl.touk.nussknacker.engine.api.async.{DefaultAsyncInterpretationValue, DefaultAsyncInterpretationValueDeterminer}
 import pl.touk.nussknacker.engine.api.context.ProcessCompilationError
 import pl.touk.nussknacker.engine.api.exception.EspExceptionInfo
-import pl.touk.nussknacker.engine.api.process.ProcessConfigCreator
+import pl.touk.nussknacker.engine.api.namespaces.ObjectNaming
+import pl.touk.nussknacker.engine.api.process.{ProcessConfigCreator, ProcessObjectDependencies}
 import pl.touk.nussknacker.engine.api.{JobData, ProcessListener, ProcessVersion}
 import pl.touk.nussknacker.engine.compile._
 import pl.touk.nussknacker.engine.definition.DefinitionExtractor.ObjectWithMethodDef
@@ -18,39 +20,57 @@ import pl.touk.nussknacker.engine.flink.util.async.DefaultAsyncExecutionConfigPr
 import pl.touk.nussknacker.engine.flink.util.listener.NodeCountMetricListener
 import pl.touk.nussknacker.engine.graph.EspProcess
 import pl.touk.nussknacker.engine.util.LoggingListener
+import pl.touk.nussknacker.engine.ModelData
+import pl.touk.nussknacker.engine.modelconfig.{InputConfigDuringExecution, ModelConfigLoader}
 
 import scala.concurrent.duration.FiniteDuration
 
-abstract class FlinkProcessCompiler(creator: ProcessConfigCreator, config: Config, val diskStateBackendSupport: Boolean) extends Serializable {
+/*
+  This class prepares (in compile method) various objects needed to run process part on one Flink operator.
+
+  Instances of this class is serialized in Flink Job graph, on jobmanager etc. That's why we struggle to keep parameters as small as possible
+  and we have InputConfigDuringExecution with ModelConfigLoader and not whole config.
+ */
+class FlinkProcessCompiler(creator: ProcessConfigCreator,
+                           inputConfigDuringExecution: InputConfigDuringExecution,
+                           modelConfigLoader: ModelConfigLoader,
+                           val diskStateBackendSupport: Boolean,
+                           objectNaming: ObjectNaming) extends Serializable {
 
   import net.ceedubs.ficus.Ficus._
   import net.ceedubs.ficus.readers.ArbitraryTypeReader._
   import pl.touk.nussknacker.engine.util.Implicits._
 
-  def compileProcess(process: EspProcess, processVersion: ProcessVersion)(userCodeClassLoader: ClassLoader): CompiledProcessWithDeps = {
+  def this(modelData: ModelData) = this(modelData.configCreator, modelData.inputConfigDuringExecution, modelData.modelConfigLoader, diskStateBackendSupport = true, modelData.objectNaming)
+
+  def compileProcess(process: EspProcess, processVersion: ProcessVersion)(userCodeClassLoader: ClassLoader): FlinkProcessCompilerData = {
+    val config = loadConfig(userCodeClassLoader)
+    val processObjectDependencies = ProcessObjectDependencies(config, objectNaming)
 
     //TODO: this should be somewhere else?
     val timeout = config.as[FiniteDuration]("timeout")
 
     //TODO: should this be the default?
-    val asyncExecutionContextPreparer = creator.asyncExecutionContextPreparer(config).getOrElse(
+    val asyncExecutionContextPreparer = creator.asyncExecutionContextPreparer(processObjectDependencies).getOrElse(
       config.as[DefaultAsyncExecutionConfigPreparer]("asyncExecutionConfig")
     )
+    implicit val defaultAsync: DefaultAsyncInterpretationValue = DefaultAsyncInterpretationValueDeterminer.determine(asyncExecutionContextPreparer)
 
-    val listenersToUse = listeners()
+    val listenersToUse = listeners(processObjectDependencies)
 
-    val compiledProcess = validateOrFailProcessCompilation(
-      CompiledProcess.compile(process, definitions(), listenersToUse, userCodeClassLoader))
+    val compiledProcess =
+      ProcessCompilerData.prepare(process, definitions(processObjectDependencies), listenersToUse, userCodeClassLoader)
 
+    val compiledExceptionHandler = validateOrFailProcessCompilation(compiledProcess.compileExceptionHandler())
     val listeningExceptionHandler = new ListeningExceptionHandler(listenersToUse,
       //FIXME: remove casting...
-      compiledProcess.parts.exceptionHandler.asInstanceOf[FlinkEspExceptionHandler])
+      compiledExceptionHandler.asInstanceOf[FlinkEspExceptionHandler])
 
-    new CompiledProcessWithDeps(
+    new FlinkProcessCompilerData(
       compiledProcess = compiledProcess,
       jobData = JobData(process.metaData, processVersion),
       exceptionHandler = listeningExceptionHandler,
-      signalSenders = new FlinkProcessSignalSenderProvider(signalSenders),
+      signalSenders = new FlinkProcessSignalSenderProvider(signalSenders(processObjectDependencies)),
       asyncExecutionContextPreparer = asyncExecutionContextPreparer,
       processTimeout = timeout
     )
@@ -61,18 +81,18 @@ abstract class FlinkProcessCompiler(creator: ProcessConfigCreator, config: Confi
     case Invalid(err) => throw new scala.IllegalArgumentException(err.toList.mkString("Compilation errors: ", ", ", ""))
   }
 
-  protected def definitions(): ProcessDefinition[ObjectWithMethodDef] = {
-    ProcessDefinitionExtractor.extractObjectWithMethods(creator, config)
+  protected def definitions(processObjectDependencies: ProcessObjectDependencies): ProcessDefinition[ObjectWithMethodDef] = {
+    ProcessDefinitionExtractor.extractObjectWithMethods(creator, processObjectDependencies)
   }
 
-  protected def listeners(): Seq[ProcessListener] = {
+  protected def listeners(processObjectDependencies: ProcessObjectDependencies): Seq[ProcessListener] = {
     //TODO: should this be configurable somehow?
     //if it's configurable, it also has to affect NodeCountMetricFunction!
-    List(LoggingListener, new NodeCountMetricListener) ++ creator.listeners(config)
+    List(LoggingListener, new NodeCountMetricListener) ++ creator.listeners(processObjectDependencies)
   }
 
-  protected def signalSenders: Map[SignalSenderKey, FlinkProcessSignalSender]
-    = definitions().signalsWithTransformers.mapValuesNow(_._1.as[FlinkProcessSignalSender])
+  protected def signalSenders(processObjectDependencies: ProcessObjectDependencies): Map[SignalSenderKey, FlinkProcessSignalSender]
+    = definitions(processObjectDependencies).signalsWithTransformers.mapValuesNow(_._1.obj.asInstanceOf[FlinkProcessSignalSender])
       .map { case (k, v) => SignalSenderKey(k, v.getClass) -> v }
 
   //TODO: consider moving to CompiledProcess??
@@ -84,4 +104,6 @@ abstract class FlinkProcessCompiler(creator: ProcessConfigCreator, config: Confi
       delegate.handle(exceptionInfo)
     }
   }
+
+  private def loadConfig(userClassLoader: ClassLoader): Config = modelConfigLoader.resolveConfig(inputConfigDuringExecution, userClassLoader)
 }

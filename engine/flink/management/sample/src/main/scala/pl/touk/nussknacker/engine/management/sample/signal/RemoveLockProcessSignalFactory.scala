@@ -11,12 +11,13 @@ import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.streaming.api.operators.{AbstractStreamOperator, OneInputStreamOperator, TwoInputStreamOperator}
 import org.apache.flink.streaming.api.scala.{DataStream, _}
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord
+import pl.touk.nussknacker.engine.api.queryablestate.QueryableState
 import pl.touk.nussknacker.engine.api.signal.SignalTransformer
 import pl.touk.nussknacker.engine.api.{MethodToInvoke, ParamName, _}
 import pl.touk.nussknacker.engine.flink.api.process.{FlinkCustomNodeContext, FlinkCustomStreamTransformation}
 import pl.touk.nussknacker.engine.flink.api.signal.FlinkProcessSignalSender
 import pl.touk.nussknacker.engine.flink.util.signal.KafkaSignalStreamConnector
-import pl.touk.nussknacker.engine.kafka.{KafkaConfig, KafkaEspUtils}
+import pl.touk.nussknacker.engine.kafka.{KafkaConfig, KafkaUtils}
 
 
 class RemoveLockProcessSignalFactory(val kafkaConfig: KafkaConfig, val signalsTopic: String)
@@ -27,7 +28,7 @@ class RemoveLockProcessSignalFactory(val kafkaConfig: KafkaConfig, val signalsTo
   @MethodToInvoke
   def sendSignal(@ParamName("lockId") lockId: String)(processId: String): Unit = {
     val signal = SampleProcessSignal(processId, System.currentTimeMillis(), RemoveLock(lockId))
-    KafkaEspUtils.sendToKafkaWithTempProducer(signalsTopic, Array.empty, Encoder[SampleProcessSignal].apply(signal).noSpaces.getBytes(StandardCharsets.UTF_8))(kafkaConfig)
+    KafkaUtils.sendToKafkaWithTempProducer(signalsTopic, Array.empty, Encoder[SampleProcessSignal].apply(signal).noSpaces.getBytes(StandardCharsets.UTF_8))(kafkaConfig)
   }
 
 }
@@ -64,7 +65,7 @@ object SampleSignalHandlingTransformer {
           .keyBy(_ => QueryableState.defaultKey)
           .transform("queryableStateTransform", new MakeStateQueryableTransformer[LockOutputStateChanged, LockOutput](lockQueryName, lockOutput => Json.fromFields(List(
             "lockEnabled" -> Json.fromBoolean(lockOutput.lockEnabled)
-          ))){}.asInstanceOf[OneInputStreamOperator[Either[LockOutputStateChanged, ValueWithContext[LockOutput]], ValueWithContext[Any]]])
+          ))){}.asInstanceOf[OneInputStreamOperator[Either[LockOutputStateChanged, ValueWithContext[LockOutput]], ValueWithContext[AnyRef]]])
       })
   }
 

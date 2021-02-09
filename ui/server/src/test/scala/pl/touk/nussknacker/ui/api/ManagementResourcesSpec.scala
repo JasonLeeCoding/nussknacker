@@ -1,7 +1,6 @@
 package pl.touk.nussknacker.ui.api
 
 import java.time.LocalDateTime
-
 import akka.http.scaladsl.model.{ContentTypeRange, StatusCodes}
 import akka.http.scaladsl.server
 import akka.http.scaladsl.testkit.ScalatestRouteTest
@@ -13,56 +12,102 @@ import io.circe.Json
 import io.circe.syntax._
 import org.scalatest._
 import org.scalatest.matchers.BeMatcher
-import pl.touk.nussknacker.engine.api.deployment.CustomProcess
+import pl.touk.nussknacker.engine.api.deployment.simple.SimpleStateStatus
+import pl.touk.nussknacker.engine.api.deployment.{CustomActionError, CustomActionResult, CustomProcess, ProcessActionType}
 import pl.touk.nussknacker.engine.api.process.ProcessName
 import pl.touk.nussknacker.engine.build.EspProcessBuilder
 import pl.touk.nussknacker.engine.canonize.ProcessCanonizer
+import pl.touk.nussknacker.restmodel.process.{ProcessId, ProcessIdWithName}
 import pl.touk.nussknacker.restmodel.processdetails._
 import pl.touk.nussknacker.test.PatientScalaFutures
+import pl.touk.nussknacker.ui.api.deployment.{CustomActionRequest, CustomActionResponse}
 import pl.touk.nussknacker.ui.api.helpers.TestFactory._
 import pl.touk.nussknacker.ui.api.helpers.{EspItTest, SampleProcess, TestFactory, TestProcessingTypes}
+import pl.touk.nussknacker.ui.process.exception.ProcessIllegalAction
 import pl.touk.nussknacker.ui.process.marshall.ProcessConverter
 import pl.touk.nussknacker.ui.process.repository.ProcessActivityRepository.ProcessActivity
-import pl.touk.nussknacker.ui.security.api.Permission
+import pl.touk.nussknacker.ui.security.api.{LoggedUser, Permission}
 import pl.touk.nussknacker.ui.util.MultipartUtils
 
 class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with FailFastCirceSupport
   with Matchers with PatientScalaFutures with OptionValues with BeforeAndAfterEach with BeforeAndAfterAll with EspItTest {
 
   private implicit final val string: FromEntityUnmarshaller[String] = Unmarshaller.stringUnmarshaller.forContentTypes(ContentTypeRange.*)
+  private val processName: ProcessName = ProcessName(SampleProcess.process.id)
 
   private val fixedTime = LocalDateTime.now()
 
-  private def deployedWithVersions(versionIds: Long*) =
-    BeMatcher(
-      equal(versionIds.map(l => DeploymentEntry(l, TestFactory.testEnvironment, fixedTime, user("userId").id, buildInfo))).matcher[List[DeploymentEntry]]
-    ).compose[List[DeploymentEntry]](_.map(_.copy(deployedAt = fixedTime)))
+  private def deployedWithVersions(versionId: Long): BeMatcher[Option[ProcessAction]] =
+    BeMatcher(equal(
+        Option(ProcessAction(versionId, fixedTime, user().username, ProcessActionType.Deploy, Option.empty, Option.empty, buildInfo))
+      ).matcher[Option[ProcessAction]]
+    ).compose[Option[ProcessAction]](_.map(_.copy(performedAt = fixedTime)))
 
-
-
-  test("process deployment should be visible in process history") {
-
+   test("process deployment should be visible in process history") {
     saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
     deployProcess(SampleProcess.process.id) ~> check {
       status shouldBe StatusCodes.OK
       getSampleProcess ~> check {
-        val oldDeployments = getHistoryDeployments
-        decodeDetails.currentlyDeployedAt shouldBe deployedWithVersions(2)
-        oldDeployments.size shouldBe 1
+        decodeDetails.lastAction shouldBe deployedWithVersions(2)
         updateProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
         deployProcess(SampleProcess.process.id) ~> check {
           getSampleProcess ~> check {
-            decodeDetails.currentlyDeployedAt shouldBe deployedWithVersions(2)
-
-            val currentDeployments = getHistoryDeployments
-            currentDeployments.size shouldBe 1
-            currentDeployments.head.environment shouldBe env
-            currentDeployments.head.deployedAt should not be oldDeployments.head.deployedAt
-            val buildInfo = currentDeployments.head.buildInfo
-            buildInfo("engine-version") should not be empty
+            decodeDetails.lastAction shouldBe deployedWithVersions(2)
           }
         }
       }
+    }
+  }
+
+  test("process during deploy can't be deploy again") {
+    createDeployedProcess(processName, testCategoryName, isSubprocess = false)
+
+    processManager.withProcessStateStatus(SimpleStateStatus.DuringDeploy) {
+      deployProcess(processName.value) ~> check {
+        status shouldBe StatusCodes.Conflict
+      }
+    }
+  }
+
+  test("canceled process can't be canceled again") {
+    createDeployedCanceledProcess(processName, testCategoryName, isSubprocess = false)
+
+    processManager.withProcessStateStatus(SimpleStateStatus.Canceled) {
+      cancelProcess(processName.value) ~> check {
+        status shouldBe StatusCodes.Conflict
+      }
+    }
+  }
+
+  test("can't deploy archived process") {
+    val id = createArchivedProcess(processName, isSubprocess = false)
+    val processIdWithName = ProcessIdWithName(id, processName)
+
+    processManager.withProcessStateStatus(SimpleStateStatus.Canceled) {
+      deployProcess(processName.value) ~> check {
+        status shouldBe StatusCodes.Conflict
+        responseAs[String] shouldBe ProcessIllegalAction.archived(ProcessActionType.Deploy, processIdWithName).message
+      }
+    }
+  }
+
+  test("can't deploy subprocess") {
+    val id = createProcess(processName, testCategoryName, isSubprocess = true)
+    val processIdWithName = ProcessIdWithName(id, processName)
+
+    deployProcess(processName.value) ~> check {
+      status shouldBe StatusCodes.Conflict
+      responseAs[String] shouldBe ProcessIllegalAction.subprocess(ProcessActionType.Deploy, processIdWithName).message
+    }
+  }
+
+  test("can't cancel subprocess") {
+    val id = createProcess(processName, testCategoryName, isSubprocess = true)
+    val processIdWithName = ProcessIdWithName(id, processName)
+
+    deployProcess(processName.value) ~> check {
+      status shouldBe StatusCodes.Conflict
+      responseAs[String] shouldBe ProcessIllegalAction.subprocess(ProcessActionType.Deploy, processIdWithName).message
     }
   }
 
@@ -71,18 +116,21 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
     deployProcess(SampleProcess.process.id, true, Some("deployComment")) ~> check {
       cancelProcess(SampleProcess.process.id, true, Some("cancelComment")) ~> check {
         status shouldBe StatusCodes.OK
+        //TODO: remove Deployment:, Stop: after adding custom icons
+        val expectedDeployComment = "Deployment: deployComment"
+        val expectedStopComment = "Stop: cancelComment"
         Get(s"/processes/${SampleProcess.process.id}/activity") ~> withAllPermissions(processActivityRoute) ~> check {
           val comments = responseAs[ProcessActivity].comments.sortBy(_.id)
-          comments.map(_.content) shouldBe List("Deployment: deployComment", "Stop: cancelComment")
+          comments.map(_.content) shouldBe List(expectedDeployComment, expectedStopComment)
 
           val firstCommentId::secondCommentId::Nil = comments.map(_.id)
 
           Get(s"/processes/${SampleProcess.process.id}/deployments") ~> withAllPermissions(processesRoute) ~> check {
-            val deploymentHistory = responseAs[List[DeploymentHistoryEntry]]
+            val deploymentHistory = responseAs[List[ProcessAction]]
             val curTime = LocalDateTime.now()
-            deploymentHistory.map(_.copy(time = curTime)) shouldBe List(
-              DeploymentHistoryEntry(2, curTime, user("userId").id, DeploymentAction.Cancel, Some(secondCommentId), Some("Stop: cancelComment"), Map()),
-              DeploymentHistoryEntry(2, curTime, user("userId").id, DeploymentAction.Deploy, Some(firstCommentId), Some("Deployment: deployComment"), TestFactory.buildInfo)
+            deploymentHistory.map(_.copy(performedAt = curTime)) shouldBe List(
+              ProcessAction(2, curTime, user().username, ProcessActionType.Cancel, Some(secondCommentId), Some(expectedStopComment), Map()),
+              ProcessAction(2, curTime, user().username, ProcessActionType.Deploy, Some(firstCommentId), Some(expectedDeployComment), TestFactory.buildInfo)
             )
           }
         }
@@ -98,13 +146,14 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
   }
 
   test("deploy technical process and mark it as deployed") {
-    implicit val loggedUser = user("userId", Map(testCategoryName->Set(Permission.Write, Permission.Deploy, Permission.Read)))
+    implicit val loggedUser: LoggedUser = user(permissions = Map(testCategoryName->Set(Permission.Write, Permission.Deploy, Permission.Read)))
     val processId = "Process1"
     whenReady(writeProcessRepository.saveNewProcess(ProcessName(processId), testCategoryName, CustomProcess(""), TestProcessingTypes.Streaming, false)) { res =>
       deployProcess(processId) ~> check { status shouldBe StatusCodes.OK }
-      getProcess(processId) ~> check {
+      getProcess(ProcessName(processId)) ~> check {
         val processDetails = responseAs[ProcessDetails]
-        processDetails.currentlyDeployedAt shouldBe deployedWithVersions(1)
+        processDetails.lastAction shouldBe deployedWithVersions(1)
+        processDetails.isDeployed shouldBe true
       }
     }
   }
@@ -114,28 +163,31 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
     deployProcess(SampleProcess.process.id) ~> check {
       status shouldBe StatusCodes.OK
       getSampleProcess ~> check {
-        decodeDetails.currentlyDeployedAt shouldBe deployedWithVersions(2)
+        decodeDetails.lastAction shouldBe deployedWithVersions(2)
         cancelProcess(SampleProcess.process.id) ~> check {
           getSampleProcess ~> check {
-            decodeDetails.currentlyDeployedAt shouldBe deployedWithVersions()
-            val currentDeployments = getHistoryDeployments
-            currentDeployments shouldBe empty
+            decodeDetails.lastAction should not be None
+            decodeDetails.isCanceled shouldBe  true
           }
         }
       }
     }
   }
 
-
   test("recognize process deploy and cancel in global process list") {
     saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
     deployProcess(SampleProcess.process.id) ~> check {
       status shouldBe StatusCodes.OK
       getProcesses ~> check {
-        decodeDetailsFromAll.currentlyDeployedAt shouldBe deployedWithVersions(2)
+        val process = findJsonProcess(responseAs[String])
+        process.value.lastActionVersionId shouldBe Some(2L)
+        process.value.isDeployed shouldBe true
+
         cancelProcess(SampleProcess.process.id) ~> check {
           getProcesses ~> check {
-            decodeDetailsFromAll.currentlyDeployedAt shouldBe deployedWithVersions()
+            val reprocess = findJsonProcess(responseAs[String])
+            reprocess.value.lastActionVersionId shouldBe Some(2L)
+            reprocess.value.isCanceled shouldBe true
           }
         }
       }
@@ -156,6 +208,22 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
       deployProcess(SampleProcess.process.id) ~> check {
         status shouldBe StatusCodes.InternalServerError
       }
+    }
+  }
+
+  test("snaphots process") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    snapshot(SampleProcess.process.id) ~> check {
+      status shouldBe StatusCodes.OK
+      responseAs[String] shouldBe MockProcessManager.savepointPath
+    }
+  }
+
+  test("stops process") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    stop(SampleProcess.process.id) ~> check {
+      status shouldBe StatusCodes.OK
+      responseAs[String] shouldBe MockProcessManager.stopSavepointPath
     }
   }
 
@@ -198,11 +266,11 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
         EspProcessBuilder
           .id("sampleProcess")
           .parallelism(1)
-          .exceptionHandler("param1" -> "'ala'")
+          .exceptionHandler()
           .source("startProcess", "csv-source")
           .filter("input", "new java.math.BigDecimal(null) == 0")
           .emptySink("end", "kafka-string", "topic" -> "'end.topic'")
-      }
+    }
 
     saveProcessAndAssertSuccess(process.id, process)
 
@@ -214,14 +282,37 @@ class ManagementResourcesSpec extends FunSuite with ScalatestRouteTest with Fail
     }
   }
 
-  private def getHistoryDeployments = decodeDetails.history.flatMap(_.deployments)
-
-  def decodeDetails: ProcessDetails = {
-    responseAs[ProcessDetails]
+  test("execute valid custom action") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    customAction(SampleProcess.process.id, CustomActionRequest("hello")) ~> check {
+      status shouldBe StatusCodes.OK
+      responseAs[CustomActionResponse] shouldBe CustomActionResponse(isSuccess = true, msg = "Hi")
+    }
   }
 
-
-  def decodeDetailsFromAll: BasicProcess = {
-    responseAs[List[BasicProcess]].find(_.name == SampleProcess.process.id).get
+  test("execute non existing custom action") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    customAction(SampleProcess.process.id, CustomActionRequest("non-existing")) ~> check {
+      status shouldBe StatusCodes.NotFound
+      responseAs[CustomActionResponse] shouldBe CustomActionResponse(isSuccess = false, msg = "non-existing is not existing")
+    }
   }
+
+  test("execute not implemented custom action") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    customAction(SampleProcess.process.id, CustomActionRequest("not-implemented")) ~> check {
+      status shouldBe StatusCodes.NotImplemented
+      responseAs[CustomActionResponse] shouldBe CustomActionResponse(isSuccess = false, msg = "not-implemented is not implemented")
+    }
+  }
+
+  test("execute custom action with not allowed process status") {
+    saveProcessAndAssertSuccess(SampleProcess.process.id, SampleProcess.process)
+    customAction(SampleProcess.process.id, CustomActionRequest("invalid-status")) ~> check {
+      status shouldBe StatusCodes.Forbidden
+      responseAs[CustomActionResponse] shouldBe CustomActionResponse(isSuccess = false, msg = s"Process status: WARNING is not allowed for action invalid-status")
+    }
+  }
+
+  def decodeDetails: ProcessDetails = responseAs[ProcessDetails]
 }

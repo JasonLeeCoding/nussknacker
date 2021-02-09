@@ -8,7 +8,7 @@ import de.heikoseeberger.akkahttpcirce.FailFastCirceSupport
 import io.circe.Encoder
 import io.circe.generic.JsonCodec
 import pl.touk.nussknacker.ui.process.deployment.ProcessIsBeingDeployed
-import pl.touk.nussknacker.ui.{BadRequestError, EspError, FatalError, NotFoundError}
+import pl.touk.nussknacker.ui.{BadRequestError, EspError, FatalError, IllegalOperationError, NotFoundError}
 import pl.touk.nussknacker.ui.validation.FatalValidationError
 
 import scala.language.implicitConversions
@@ -25,6 +25,7 @@ object EspErrorToHttp extends LazyLogging with FailFastCirceSupport {
       case e: BadRequestError => StatusCodes.BadRequest
       case e: ProcessIsBeingDeployed => StatusCodes.Conflict
       case e: FatalValidationError => StatusCodes.BadRequest
+      case e: IllegalOperationError => StatusCodes.Conflict
       //unknown?
       case _ =>
         logger.error(s"Unknown EspError: ${error.getMessage}", error)
@@ -67,7 +68,7 @@ object EspErrorToHttp extends LazyLogging with FailFastCirceSupport {
   }
 
   def toResponseReject(message: String): ToResponseMarshallable = {
-    val entity = JSONObject(Map("message" -> message)).toString().stripMargin
+    val entity = Encoder.encodeMap[String, String].apply(Map("message" -> message)).spaces2
     HttpResponse(status = StatusCodes.BadRequest, entity = HttpEntity(ContentTypes.`application/json`, entity))
   }
 }

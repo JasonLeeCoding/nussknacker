@@ -1,9 +1,8 @@
 package pl.touk.nussknacker.engine.management
 
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.{Files, Path}
 import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
+import java.nio.file.{Files, Path}
 import java.util.Collections
 
 import com.spotify.docker.client.{DefaultDockerClient, DockerClient}
@@ -15,24 +14,25 @@ import com.whisk.docker.scalatest.DockerTestKit
 import com.whisk.docker.{ContainerLink, DockerContainer, DockerFactory, DockerReadyChecker, LogLineReceiver, VolumeMapping}
 import org.apache.commons.io.{FileUtils, IOUtils}
 import org.scalatest.Suite
-import org.scalatest.concurrent.ScalaFutures
-import org.scalatest.time.{Millis, Seconds, Span}
-import pl.touk.nussknacker.engine.kafka.KafkaClient
+import pl.touk.nussknacker.engine.ProcessingTypeConfig
+import pl.touk.nussknacker.engine.api.deployment.User
 import pl.touk.nussknacker.engine.util.config.ScalaMajorVersionConfig
+import pl.touk.nussknacker.test.ExtremelyPatientScalaFutures
 
 import scala.concurrent.duration._
 
-trait DockerTest extends DockerTestKit with ScalaFutures with LazyLogging {
+trait DockerTest extends DockerTestKit with ExtremelyPatientScalaFutures with LazyLogging {
   self: Suite =>
 
-  private val flinkEsp = s"flinkesp:1.7.2-scala_${ScalaMajorVersionConfig.scalaMajorVersion}"
+  override val StartContainersTimeout: FiniteDuration = 5.minutes
+  override val StopContainersTimeout: FiniteDuration = 2.minutes
+
+
+  private val flinkEsp = s"flinkesp:1.10.0-scala_${ScalaMajorVersionConfig.scalaMajorVersion}"
 
   private val client: DockerClient = DefaultDockerClient.fromEnv().build()
 
-  override implicit val patienceConfig: PatienceConfig = PatienceConfig(
-    timeout = Span(90, Seconds),
-    interval = Span(1, Millis)
-  )
+  protected val userToAct = User("testUser", "Test User")
 
   override implicit val dockerFactory: DockerFactory = new SpotifyDockerFactory(client)
 
@@ -66,7 +66,7 @@ trait DockerTest extends DockerTestKit with ScalaFutures with LazyLogging {
     baseFlink("jobmanager")
       .withCommand("jobmanager")
       .withEnv("JOB_MANAGER_RPC_ADDRESS_COMMAND=grep $HOSTNAME /etc/hosts | awk '{print $1}'", s"SAVEPOINT_DIR_NAME=${savepointDir.getFileName}")
-      .withReadyChecker(DockerReadyChecker.LogLineContains("Recovering all persisted jobs").looped(5, 1 second))
+      .withReadyChecker(DockerReadyChecker.LogLineContains("Recover all persisted job graphs").looped(5, 1 second))
       .withLinks(ContainerLink(zookeeperContainer, "zookeeper"))
       .withVolumes(List(VolumeMapping(savepointDir.toString, savepointDir.toString, rw = true)))
       .withLogLineReceiver(LogLineReceiver(withErr = true, s => {
@@ -99,10 +99,11 @@ trait DockerTest extends DockerTestKit with ScalaFutures with LazyLogging {
   }
 
   def config: Config = ConfigFactory.load()
-    .withValue("flinkConfig.restUrl", fromAnyRef(s"http://${jobManagerContainer.getIpAddresses().futureValue.head}:$FlinkJobManagerRestPort"))
-    .withValue("flinkConfig.classpath", ConfigValueFactory.fromIterable(Collections.singletonList(classPath)))
+    .withValue("engineConfig.restUrl", fromAnyRef(s"http://${jobManagerContainer.getIpAddresses().futureValue.head}:$FlinkJobManagerRestPort"))
+    .withValue("modelConfig.classPath", ConfigValueFactory.fromIterable(Collections.singletonList(classPath)))
     .withFallback(additionalConfig)
 
+  def processingTypeConfig: ProcessingTypeConfig = ProcessingTypeConfig.read(config)
 
   protected def classPath: String
 

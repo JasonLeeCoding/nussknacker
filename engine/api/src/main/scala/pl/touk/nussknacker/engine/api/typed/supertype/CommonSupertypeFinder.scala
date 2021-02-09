@@ -1,7 +1,6 @@
 package pl.touk.nussknacker.engine.api.typed.supertype
 
 import org.apache.commons.lang3.ClassUtils
-import pl.touk.nussknacker.engine.api.typed.ClazzRef
 import pl.touk.nussknacker.engine.api.typed.typing._
 
 /**
@@ -11,8 +10,10 @@ import pl.touk.nussknacker.engine.api.typed.typing._
   * This class, like CanBeSubclassDeterminer is in spirit of "Be type safety as much as possible, but also provide some helpful
   * conversion for types not in the same jvm class hierarchy like boxed Integer to boxed Long and so on".
   * WARNING: Evaluation of SpEL expressions fit into this spirit, for other language evaluation engines you need to provide such a compatibility.
+  *
+  * TODO: strictTaggedTypesChecking was added as quickFix for compare Type with TaggedType. We should remove it after we will support creating model with TaggedType field
   */
-class CommonSupertypeFinder(classResolutionStrategy: SupertypeClassResolutionStrategy) {
+class CommonSupertypeFinder(classResolutionStrategy: SupertypeClassResolutionStrategy, strictTaggedTypesChecking: Boolean) {
 
   def commonSupertype(left: TypingResult, right: TypingResult)
                      (implicit numberPromotionStrategy: NumberTypesPromotionStrategy): TypingResult =
@@ -59,7 +60,11 @@ class CommonSupertypeFinder(classResolutionStrategy: SupertypeClassResolutionStr
             }
             .getOrElse(Typed.empty)
         }
+      case (TypedTaggedValue(leftType, _), notTaggedRightType) if !strictTaggedTypesChecking =>
+        singleCommonSupertype(leftType, notTaggedRightType)
       case (_: TypedTaggedValue, _) => Typed.empty
+      case (notTaggedLeftType, TypedTaggedValue(rightType, _)) if !strictTaggedTypesChecking =>
+        singleCommonSupertype(notTaggedLeftType, rightType)
       case (_, _: TypedTaggedValue) => Typed.empty
       case (f: TypedClass, s: TypedClass) => klassCommonSupertype(f, s)
     }
@@ -96,11 +101,11 @@ class CommonSupertypeFinder(classResolutionStrategy: SupertypeClassResolutionStr
     if (List(boxedLeftClass, boxedRightClass).forall(isSimpleType)) {
       commonSuperTypeForSimpleTypes(boxedLeftClass, boxedRightClass) match {
         case tc: TypedClass => Some(tc)
-        case TypedUnion(types) if types.nonEmpty && types.forall(_.canBeSubclassOf(Typed[Number])) => Some(TypedClass[Number])
+        case TypedUnion(types) if types.nonEmpty && types.forall(_.canBeSubclassOf(Typed[Number])) => Some(Typed.typedClass[Number])
         case _ => None // empty e.g. conflicting simple types
       }
     } else {
-      val forComplexTypes = commonSuperTypeForComplexTypes(boxedLeftClass, boxedRightClass)
+      val forComplexTypes = commonSuperTypeForComplexTypes(boxedLeftClass, left.params, boxedRightClass, right.params)
       forComplexTypes match {
         case tc: TypedClass => Some(tc)
         case _ => None // empty, union and so on
@@ -115,29 +120,35 @@ class CommonSupertypeFinder(classResolutionStrategy: SupertypeClassResolutionStr
     if (List(boxedLeftClass, boxedRightClass).forall(isSimpleType)) {
       commonSuperTypeForSimpleTypes(boxedLeftClass, boxedRightClass)
     } else {
-      commonSuperTypeForComplexTypes(boxedLeftClass, boxedRightClass)
+      commonSuperTypeForComplexTypes(boxedLeftClass, left.params, boxedRightClass, right.params)
     }
   }
 
   private def commonSuperTypeForSimpleTypes(left: Class[_], right: Class[_])
                                            (implicit numberPromotionStrategy: NumberTypesPromotionStrategy): TypingResult = {
     if (classOf[Number].isAssignableFrom(left) && classOf[Number].isAssignableFrom(right))
-      numberPromotionStrategy.promote(left, right)
+      numberPromotionStrategy.promoteClasses(left, right)
     else if (left == right)
-      TypedClass(ClazzRef(left))
+      Typed(left)
     else
       Typed.empty
   }
 
-  private def commonSuperTypeForComplexTypes(left: Class[_], right: Class[_]) = {
+  private def commonSuperTypeForComplexTypes(left: Class[_], leftParams: List[TypingResult], right: Class[_], rightParams: List[TypingResult])
+                                            (implicit numberPromotionStrategy: NumberTypesPromotionStrategy) = {
     if (left.isAssignableFrom(right)) {
-      Typed(left)
+      Typed.genericTypeClass(left, commonSuperTypesForGenericParams(leftParams, rightParams))
     } else if (right.isAssignableFrom(left)) {
-      Typed(right)
+      Typed.genericTypeClass(right, commonSuperTypesForGenericParams(leftParams, rightParams))
     } else {
       // until here things are rather simple
       Typed(commonSuperTypeForClassesNotInSameInheritanceLine(left, right).map(Typed(_)))
     }
+  }
+
+  private def commonSuperTypesForGenericParams(leftParams: List[TypingResult], rightParams: List[TypingResult])
+                                              (implicit numberPromotionStrategy: NumberTypesPromotionStrategy) = {
+    leftParams.zip(rightParams).map { case (l, p) => commonSupertype(l, p) }
   }
 
   private def commonSuperTypeForClassesNotInSameInheritanceLine(left: Class[_], right: Class[_]): Set[Class[_]] = {

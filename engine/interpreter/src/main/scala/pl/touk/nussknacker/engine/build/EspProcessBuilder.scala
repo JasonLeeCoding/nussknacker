@@ -2,7 +2,7 @@ package pl.touk.nussknacker.engine.build
 
 import cats.data.NonEmptyList
 import pl.touk.nussknacker.engine.api.process.ProcessName
-import pl.touk.nussknacker.engine.api.{BatchMetaData, Group, MetaData, ProcessAdditionalFields, StandaloneMetaData, StreamMetaData}
+import pl.touk.nussknacker.engine.api.{Group, MetaData, ProcessAdditionalFields, StandaloneMetaData, StreamMetaData}
 import pl.touk.nussknacker.engine.build.GraphBuilder.Creator
 import pl.touk.nussknacker.engine.graph.exceptionhandler.ExceptionHandlerRef
 import pl.touk.nussknacker.engine.graph.expression.Expression
@@ -31,6 +31,8 @@ class ProcessMetaDataBuilder private[build](metaData: MetaData) {
   def exceptionHandler(params: (String, Expression)*) =
     new ProcessExceptionHandlerBuilder(ExceptionHandlerRef(params.map(evaluatedparam.Parameter.tupled).toList))
 
+  def exceptionHandlerNoParams() = new ProcessExceptionHandlerBuilder(ExceptionHandlerRef(List.empty))
+
   class ProcessExceptionHandlerBuilder private[ProcessMetaDataBuilder](exceptionHandlerRef: ExceptionHandlerRef) {
 
     def source(id: String, typ: String, params: (String, Expression)*): ProcessGraphBuilder =
@@ -52,12 +54,6 @@ object EspProcessBuilder {
   def id(id: String) =
     new ProcessMetaDataBuilder(MetaData(id, StreamMetaData()))
 
-}
-
-object BatchProcessBuilder {
-
-  def id(id: String) =
-    new ProcessMetaDataBuilder((MetaData(id, BatchMetaData())))
 }
 
 object StandaloneProcessBuilder {

@@ -7,7 +7,7 @@ import pl.touk.nussknacker.engine.{ModelData, ProcessManagerProvider, Processing
 import pl.touk.nussknacker.engine.api.{StreamMetaData, TypeSpecificData}
 import pl.touk.nussknacker.engine.api.deployment.ProcessManager
 import pl.touk.nussknacker.engine.flink.queryablestate.FlinkQueryableClient
-import pl.touk.nussknacker.engine.queryablestate.QueryableClient
+import pl.touk.nussknacker.engine.api.queryablestate.QueryableClient
 import sttp.client.{NothingT, SttpBackend}
 import sttp.client.asynchttpclient.future.AsyncHttpClientFutureBackend
 
@@ -41,21 +41,8 @@ class FlinkStreamingProcessManagerProvider extends ProcessManagerProvider {
 
 object FlinkStreamingProcessManagerProvider {
 
-  import net.ceedubs.ficus.Ficus._
-  import net.ceedubs.ficus.readers.ArbitraryTypeReader._
-  import pl.touk.nussknacker.engine.util.config.FicusReaders._
-
-  def defaultTypeConfig(config: Config): ProcessingTypeConfig = {
-    ProcessingTypeConfig("flinkStreaming",
-      config.as[ClasspathConfig]("flinkConfig").urls,
-      config.getConfig("flinkConfig"),
-      config.getConfig("processConfig"))
-  }
-
-  def defaultModelData(config: Config): ModelData = defaultTypeConfig(config).toModelData
-
   def defaultProcessManager(config: Config): ProcessManager = {
-    val typeConfig = defaultTypeConfig(config)
+    val typeConfig = ProcessingTypeConfig.read(config)
     new FlinkStreamingProcessManagerProvider().createProcessManager(typeConfig.toModelData, typeConfig.engineConfig)
   }
 }

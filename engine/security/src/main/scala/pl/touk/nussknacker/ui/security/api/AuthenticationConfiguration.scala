@@ -2,16 +2,22 @@ package pl.touk.nussknacker.ui.security.api
 
 import java.io.File
 import java.net.URI
+import java.security.PublicKey
 
 import com.typesafe.config.{Config, ConfigFactory}
-import net.ceedubs.ficus.readers.ValueReader
+import pl.touk.nussknacker.engine.util.cache.CacheConfig
 import pl.touk.nussknacker.ui.security.api.AuthenticationConfiguration.{ConfigRule, ConfigUser}
 import pl.touk.nussknacker.ui.security.api.AuthenticationMethod.AuthenticationMethod
 import pl.touk.nussknacker.ui.security.api.GlobalPermission.GlobalPermission
 import pl.touk.nussknacker.ui.security.api.Permission.Permission
 
+import scala.concurrent.duration._
+
 trait AuthenticationConfiguration {
   def authorizeUrl: Option[URI] = Option.empty
+  def authSeverPublicKey: Option[PublicKey] = Option.empty
+  def idTokenNonceVerificationRequired: Boolean
+  def implicitGrantEnabled: Boolean
   def method: AuthenticationMethod
   def usersFile: String
 
@@ -34,10 +40,6 @@ object AuthenticationConfiguration {
   import net.ceedubs.ficus.Ficus._
   import net.ceedubs.ficus.readers.EnumerationReader._
   import net.ceedubs.ficus.readers.ArbitraryTypeReader._
-
-  implicit val uriValueReader: ValueReader[URI] = new ValueReader[URI] {
-    def read(config: Config, path: String): URI = new URI(config.getString(path))
-  }
 
   val authenticationConfigPath = "authentication"
   val methodConfigPath = s"$authenticationConfigPath.method"
@@ -62,7 +64,15 @@ object AuthenticationConfiguration {
                         globalPermissions: List[GlobalPermission] = List.empty)
 }
 
-case class DefaultAuthenticationConfiguration(method: AuthenticationMethod = AuthenticationMethod.Other, usersFile: String) extends AuthenticationConfiguration
+case class DefaultAuthenticationConfiguration(method: AuthenticationMethod = AuthenticationMethod.Other, usersFile: String,
+                                              cachingHashes: Option[CachingHashesConfig]) extends AuthenticationConfiguration {
+
+  def cachingHashesOrDefault: CachingHashesConfig = cachingHashes.getOrElse(CachingHashesConfig.defaultConfig)
+
+  def implicitGrantEnabled: Boolean = false
+
+  def idTokenNonceVerificationRequired: Boolean = false
+}
 
 object DefaultAuthenticationConfiguration {
   import net.ceedubs.ficus.Ficus._
@@ -72,4 +82,33 @@ object DefaultAuthenticationConfiguration {
 
   def create(config: Config): DefaultAuthenticationConfiguration =
     config.as[DefaultAuthenticationConfiguration](authenticationConfigPath)
+}
+
+case class CachingHashesConfig(enabled: Option[Boolean],
+                               maximumSize: Option[Long],
+                               expireAfterAccess: Option[FiniteDuration],
+                               expireAfterWrite: Option[FiniteDuration]) {
+
+  def isEnabled: Boolean = enabled.getOrElse(CachingHashesConfig.defaultEnabledValue)
+
+  def toCacheConfig: Option[CacheConfig] =
+    if (isEnabled) {
+      Some(CacheConfig(
+        maximumSize.getOrElse(CacheConfig.defaultMaximumSize),
+        expireAfterAccess.orElse(CachingHashesConfig.defaultExpireAfterAccess),
+        expireAfterWrite.orElse(CachingHashesConfig.defaultExpireAfterWrite)
+      ))
+    } else {
+      None
+    }
+
+}
+
+object CachingHashesConfig {
+
+  val defaultEnabledValue: Boolean = false
+  val defaultExpireAfterAccess: Option[FiniteDuration] = Some(1.hour)
+  val defaultExpireAfterWrite: Option[FiniteDuration] = None
+  val defaultConfig: CachingHashesConfig = CachingHashesConfig(Some(defaultEnabledValue), None, None, None)
+
 }

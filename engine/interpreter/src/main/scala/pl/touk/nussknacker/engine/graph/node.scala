@@ -4,8 +4,7 @@ import io.circe.{Decoder, Encoder}
 import io.circe.generic.JsonCodec
 import io.circe.generic.extras.Configuration
 import org.apache.commons.lang3.ClassUtils
-import pl.touk.nussknacker.engine.api.{CirceUtil, JoinReference}
-import pl.touk.nussknacker.engine.api.typed.ClazzRef
+import pl.touk.nussknacker.engine.api.{CirceUtil, JoinReference, LayoutData}
 import pl.touk.nussknacker.engine.graph.evaluatedparam.{BranchParameters, Parameter}
 import pl.touk.nussknacker.engine.graph.expression.Expression
 import pl.touk.nussknacker.engine.graph.node.NodeData
@@ -16,8 +15,8 @@ import pl.touk.nussknacker.engine.graph.source.SourceRef
 import pl.touk.nussknacker.engine.graph.subprocess.SubprocessRef
 import pl.touk.nussknacker.engine.graph.variable.Field
 
+import scala.reflect.ClassTag
 import scala.util.Try
-import scala.reflect.runtime.universe._
 
 object node {
 
@@ -55,7 +54,7 @@ object node {
 
   case class BranchEnd(data: BranchEndData) extends SubsequentNode
 
-  @JsonCodec case class UserDefinedAdditionalNodeFields(description: Option[String])
+  @JsonCodec case class UserDefinedAdditionalNodeFields(description: Option[String], layoutData: Option[LayoutData])
 
   sealed trait NodeData {
     def id: String
@@ -70,7 +69,7 @@ object node {
     def isDisabled: Option[Boolean]
   }
 
-  sealed trait CustomNodeData extends NodeData with WithComponent with RealNodeData {
+  sealed trait CustomNodeData extends NodeData with WithComponent with RealNodeData with WithParameters {
     def nodeType: String
     def parameters: List[Parameter]
     def outputVar: Option[String]
@@ -78,6 +77,10 @@ object node {
 
   trait WithComponent {
     def componentId: String
+  }
+
+  trait WithParameters {
+    def parameters: List[Parameter]
   }
 
   sealed trait OneOutputSubsequentNodeData extends NodeData with RealNodeData
@@ -88,15 +91,17 @@ object node {
 
   sealed trait SourceNodeData extends StartingNodeData
 
-  case class Source(id: String, ref: SourceRef, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends SourceNodeData with WithComponent with RealNodeData {
-    override val componentId = ref.typ
+  case class Source(id: String, ref: SourceRef, additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
+    extends SourceNodeData with WithComponent with RealNodeData with WithParameters {
+    override val componentId: String = ref.typ
+    override def parameters: List[Parameter] = ref.parameters
   }
 
   // TODO JOIN: move branchParameters to BranchEnd
   case class Join(id: String, outputVar: Option[String], nodeType: String,
                   parameters: List[Parameter], branchParameters: List[BranchParameters],
                   additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends StartingNodeData with CustomNodeData {
-    override val componentId = nodeType
+    override val componentId: String = nodeType
   }
 
   case class Filter(id: String, expression: Expression, isDisabled: Option[Boolean] = None,
@@ -108,20 +113,23 @@ object node {
 
   case class Variable(id: String, varName: String, value: Expression, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends OneOutputSubsequentNodeData
 
-  case class Enricher(id: String, service: ServiceRef, output: String, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends OneOutputSubsequentNodeData with WithComponent {
-    override val componentId = service.id
+  case class Enricher(id: String, service: ServiceRef, output: String, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends OneOutputSubsequentNodeData with WithComponent with WithParameters {
+    override val componentId: String = service.id
+    override def parameters: List[Parameter] = service.parameters
   }
 
   case class CustomNode(id: String, outputVar: Option[String], nodeType: String, parameters: List[Parameter],
                         additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
-    extends OneOutputSubsequentNodeData with CustomNodeData {
+    extends OneOutputSubsequentNodeData with CustomNodeData with EndingNodeData {
     override val componentId = nodeType
   }
 
   case class Split(id: String, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends NodeData with RealNodeData
 
-  case class Processor(id: String, service: ServiceRef, isDisabled: Option[Boolean] = None, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends OneOutputSubsequentNodeData with EndingNodeData with Disableable with WithComponent {
-    override val componentId = service.id
+  case class Processor(id: String, service: ServiceRef, isDisabled: Option[Boolean] = None, additionalFields: Option[UserDefinedAdditionalNodeFields] = None) extends
+    OneOutputSubsequentNodeData with EndingNodeData with Disableable with WithComponent with WithParameters {
+    override val componentId: String = service.id
+    override def parameters: List[Parameter] = service.parameters
   }
 
   case class BranchEndData(definition: BranchEndDefinition) extends EndingNodeData {
@@ -136,20 +144,23 @@ object node {
   @JsonCodec case class BranchEndDefinition(id: String, joinId: String) {
 
     //in CanonicalProcess and EspProcess we have to add artifical node (BranchEnd), we use this generated, unique id
+    //TODO: we're using this also in ProcessUtils.ts (findContextForBranch, findVariablesForBranches). This should be refactored, so
+    //that we're passing ValidationContext for nodes explicitly
     def artificialNodeId: String = s"$$edge-$id-$joinId"
 
     //TODO: remove it and replace with sth more understandable
     def joinReference: JoinReference = JoinReference(artificialNodeId, joinId)
   }
-
+  
   case class Sink(
                    id: String,
                    ref: SinkRef,
                    endResult: Option[Expression] = None,
                    isDisabled: Option[Boolean] = None,
                    additionalFields: Option[UserDefinedAdditionalNodeFields] = None
-                 ) extends EndingNodeData with WithComponent with Disableable with RealNodeData {
-    override val componentId = ref.typ
+                 ) extends EndingNodeData with WithComponent with Disableable with RealNodeData with WithParameters {
+    override val componentId: String = ref.typ
+    override def parameters: List[Parameter] = ref.parameters
   }
 
   // TODO: A better way of passing information regarding subprocess parameter definition
@@ -163,7 +174,7 @@ object node {
 
 
   //this is used after resolving subprocess, used for detecting when subprocess ends and context should change
-  case class SubprocessOutput(id: String, outputName: String, additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
+  case class SubprocessOutput(id: String, outputName: String, fields: List[Field], additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
     extends OneOutputSubsequentNodeData
 
   //this is used only in subprocess definition
@@ -173,11 +184,11 @@ object node {
     extends SourceNodeData with RealNodeData
 
   //this is used only in subprocess definition
-  case class SubprocessOutputDefinition(id: String, outputName: String, additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
+  case class SubprocessOutputDefinition(id: String, outputName: String, fields: List[Field] = List.empty, additionalFields: Option[UserDefinedAdditionalNodeFields] = None)
     extends EndingNodeData with RealNodeData
 
-  //we don't use DefinitionExtractor.Parameter here, because this class should be serializable to json and Parameter has ClazzRef which has *real* class inside  
-  //TODO: probably should be able to handle class parameters or typed maps
+  //we don't use DefinitionExtractor.Parameter here, because this class should be serializable to json and Parameter has TypedResult which has *real* class inside
+  //TODO: probably should be able to handle class parameters or typed maps (i.e. use TypingResult inside SubprocessClazzRef)
   //shape of this data should probably change, currently we leave it for backward compatibility
   object SubprocessInputDefinition {
 
@@ -185,7 +196,7 @@ object node {
 
     object SubprocessClazzRef {
 
-      def apply[T: TypeTag]: SubprocessClazzRef = SubprocessClazzRef(ClazzRef.fromDetailedType[T].refClazzName)
+      def apply[T: ClassTag]: SubprocessClazzRef = SubprocessClazzRef(implicitly[ClassTag[T]].runtimeClass.getName)
 
     }
 

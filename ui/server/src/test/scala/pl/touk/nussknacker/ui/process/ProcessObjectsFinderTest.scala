@@ -4,6 +4,7 @@ import java.time.LocalDateTime
 
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.{FunSuite, Matchers}
+import pl.touk.nussknacker.engine.api.deployment.ProcessActionType
 import pl.touk.nussknacker.engine.api.{MetaData, StreamMetaData}
 import pl.touk.nussknacker.engine.build.EspProcessBuilder
 import pl.touk.nussknacker.engine.canonicalgraph.canonicalnode.FlatNode
@@ -15,7 +16,7 @@ import pl.touk.nussknacker.ui.api.helpers.TestProcessUtil
 import pl.touk.nussknacker.ui.api.helpers.TestProcessingTypes
 import pl.touk.nussknacker.ui.process.marshall.ProcessConverter
 import pl.touk.nussknacker.engine.testing.ProcessDefinitionBuilder.ObjectProcessDefinition
-import pl.touk.nussknacker.restmodel.processdetails.{DeploymentEntry}
+import pl.touk.nussknacker.restmodel.processdetails.{ProcessAction}
 
 class ProcessObjectsFinderTest extends FunSuite with Matchers with TableDrivenPropertyChecks {
 
@@ -24,7 +25,7 @@ class ProcessObjectsFinderTest extends FunSuite with Matchers with TableDrivenPr
   val subprocess = CanonicalProcess(MetaData("subProcess1", StreamMetaData(), isSubprocess = true), null,
     List(
       canonicalnode.FlatNode(SubprocessInputDefinition("start", List(SubprocessParameter("ala", SubprocessClazzRef[String])))),
-      canonicalnode.FlatNode(CustomNode("f1", None, otherExistingStreamTransformer2, List.empty)), FlatNode(SubprocessOutputDefinition("out1", "output"))), None
+      canonicalnode.FlatNode(CustomNode("f1", None, otherExistingStreamTransformer2, List.empty)), FlatNode(SubprocessOutputDefinition("out1", "output", List.empty))), None
   )
 
   val subprocessDetails = toDetails(ProcessConverter.toDisplayable(subprocess, TestProcessingTypes.Streaming))
@@ -36,7 +37,7 @@ class ProcessObjectsFinderTest extends FunSuite with Matchers with TableDrivenPr
       .customNode("custom2", "out2", otherExistingStreamTransformer)
       .emptySink("sink", existingSinkFactory)))
 
-  private val process1deployed = process1.copy(currentlyDeployedAt = List(DeploymentEntry(1, "test", LocalDateTime.now(), "user", Map[String,String]())))
+  private val process1deployed = process1.copy(lastAction = Option(ProcessAction(1, LocalDateTime.now(), "user", ProcessActionType.Deploy, Option.empty, Option.empty, Map.empty)))
 
   private val process2 = toDetails(TestProcessUtil.toDisplayable(
     EspProcessBuilder.id("fooProcess2").exceptionHandler()
@@ -73,7 +74,8 @@ class ProcessObjectsFinderTest extends FunSuite with Matchers with TableDrivenPr
       "query1" -> List(process1.id),
       "query2" -> List(process1.id),
       "query3" -> List(process1.id, process2.id),
-      "query4" -> List(process4.id)
+      "query4" -> List(process4.id),
+      "query5" -> List.empty
     )
   }
 
@@ -97,9 +99,9 @@ class ProcessObjectsFinderTest extends FunSuite with Matchers with TableDrivenPr
   test("should find unused components") {
     val table = Table(
       ("processes", "unusedComponents"),
-      (List(invalidProcessWithAllObjects), List()),
-      (List(process1, process4), List("barService", "fooService")),
-      (List(process1), List("barService", "fooService", "subProcess1"))
+      (List(invalidProcessWithAllObjects), List("fooProcessor", "fooService2", "fooService3", "fooService4", "fooSource", "notBlank", optionalEndingStreamTransformer)),
+      (List(process1, process4), List("barService", "fooProcessor", "fooService", "fooService2", "fooService3", "fooService4", "fooSource", "notBlank", optionalEndingStreamTransformer)),
+      (List(process1), List("barService", "fooProcessor", "fooService", "fooService2", "fooService3", "fooService4", "fooSource",  "notBlank", optionalEndingStreamTransformer, "subProcess1"))
     )
     forAll(table) { (processes, unusedComponents) =>
       val result = ProcessObjectsFinder.findUnusedComponents(processes ++ List(subprocessDetails), List(processDefinition))

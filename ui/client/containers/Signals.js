@@ -1,16 +1,17 @@
-import React from 'react'
-import {connect} from 'react-redux';
-import ActionsUtils from "../actions/ActionsUtils";
-import HttpService from "../http/HttpService";
-import QueriedStateTable from "../components/QueriedStateTable";
-import _ from "lodash";
-import {nkPath} from "../config";
+import _ from "lodash"
+import React from "react"
+import {connect} from "react-redux"
+import ActionsUtils from "../actions/ActionsUtils"
+import QueriedStateTable from "../components/QueriedStateTable"
+import {InputWithFocus, SelectWithFocus} from "../components/withFocus"
+import {nkPath} from "../config"
+import HttpService from "../http/HttpService"
 
 //this needs some love
-class Signals extends React.Component {
+export class Signals extends React.Component {
 
   constructor(props) {
-    super(props);
+    super(props)
     this.state = this.initialState(props)
   }
 
@@ -21,13 +22,13 @@ class Signals extends React.Component {
       this.setState({
         signals: signals,
         signalType: firstSignal,
-        processId: signals[firstSignal].availableProcesses[0]
+        processId: signals[firstSignal].availableProcesses[0],
       })
     })
   }
 
   initialState(props) {
-    return {signalType: '', processId: null, signalParams: {}, signals: {}}
+    return {signalType: "", processId: null, signalParams: {}, signals: {}}
   }
 
   render() {
@@ -47,44 +48,54 @@ class Signals extends React.Component {
               <div className="node-row">
                 <div className="node-label">Signal type</div>
                 <div className="node-value">
-                  <select className="node-input" onChange={(e) => {
-                    const nextSignalType = e.target.value
-                    this.setState({
-                      signalType: nextSignalType,
-                      signalParams: {},
-                      processId: this.firstProcessForSignal(nextSignalType)
-                    })
-                  }}>
+                  <SelectWithFocus
+                    className="node-input"
+                    onChange={(e) => {
+                      const nextSignalType = e.target.value
+                      this.setState({
+                        signalType: nextSignalType,
+                        signalParams: {},
+                        processId: this.firstProcessForSignal(nextSignalType),
+                      })
+                    }}
+                  >
                     {_.map(_.keys(this.state.signals), (sig, index) => (
                       <option key={index} value={sig}>{sig}</option>))}
-                  </select>
+                  </SelectWithFocus>
                 </div>
               </div>
               <div className="node-row">
                 <div className="node-label">Process id</div>
                 <div className="node-value">
-                  <select className="node-input" onChange={(e) => this.setState({processId: e.target.value})}>
+                  <SelectWithFocus className="node-input" onChange={(e) => this.setState({processId: e.target.value})}>
                     {(currentSignal.availableProcesses || [])
-                    .map((process, index) => (<option key={index} value={process}>{process}</option>))}
-                  </select>
+                      .map((process, index) => (<option key={index} value={process}>{process}</option>))}
+                  </SelectWithFocus>
                 </div>
               </div>
-              {_.get(currentSignal, 'parameters', []).map((param, idx) => {
+              {_.get(currentSignal, "parameters", []).map((param, idx) => {
                 return (
                   <div className="node-row" key={idx}>
                     <div className="node-label">{param}</div>
                     <div className="node-value">
-                      <input className="node-input" type="text" value={this.state.signalParams[param] || ""}
-                             onChange={(e) => this.changeParamValue(param, e.target.value)}/>
+                      <InputWithFocus
+                        className="node-input"
+                        type="text"
+                        value={this.state.signalParams[param] || ""}
+                        onChange={(e) => this.changeParamValue(param, e.target.value)}
+                      />
                     </div>
                   </div>
                 )
               })}
             </div>
-            <button type="button" className="modalButton"
-                    disabled={_.isEmpty(this.state.signalType) || _.isEmpty(this.state.processId)}
-                    title={sendSignalButtonTooltip}
-                    onClick={this.sendSignal.bind(this, this.state.signalType, this.state.processId, this.state.signalParams)}>Send
+            <button
+              type="button"
+              className="modalButton"
+              disabled={_.isEmpty(this.state.signalType) || _.isEmpty(this.state.processId)}
+              title={sendSignalButtonTooltip}
+              onClick={this.sendSignal.bind(this, this.state.signalType, this.state.processId, this.state.signalParams)}
+            >Send
               signal
             </button>
           </div>
@@ -114,7 +125,6 @@ class Signals extends React.Component {
     this.setState({signalParams: newSignalParams})
   }
 
-
 }
 
 Signals.path = `${nkPath}/signals`
@@ -122,8 +132,8 @@ Signals.header = "Signals"
 
 function mapState(state) {
   return {
-    processingType: 'streaming',
-  };
+    processingType: "streaming",
+  }
 }
 
-export default connect(mapState, ActionsUtils.mapDispatchWithEspActions)(Signals);
+export default connect(mapState, ActionsUtils.mapDispatchWithEspActions)(Signals)
